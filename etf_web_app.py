@@ -18,6 +18,8 @@ from pykrx import stock
 from datetime import datetime, timedelta
 import json
 import os
+from google.oauth2.service_account import Credentials
+import gspread
 
 # ── 페이지 설정 ──────────────────────────────────────────────────
 st.set_page_config(
@@ -38,8 +40,6 @@ def set_korean_font():
             plt.rcParams['axes.unicode_minus'] = False
             return
 
-    # 클라우드(Streamlit Community Cloud 등) 환경 - 위 폰트가 없으면
-    # 프로젝트에 폰트 파일을 함께 올려두고 그걸 직접 로드합니다.
     font_path = os.path.join(os.path.dirname(__file__), "fonts", "NanumGothic.ttf")
     if os.path.exists(font_path):
         fm.fontManager.addfont(font_path)
@@ -48,20 +48,66 @@ def set_korean_font():
 
 set_korean_font()
 
-# ── 보유종목 저장/불러오기 ───────────────────────────────────────
-HOLDINGS_FILE = "etf_holdings.json"
+# ── Google Sheets 연동 ───────────────────────────────────────────
+SPREADSHEET_ID = "11CsPSsBYxb9xdHD4DUgF644unusLJ1xw4RlNSI6RII8"
+SHEET_NAME     = "note"
+SCOPES         = ["https://www.googleapis.com/auth/spreadsheets"]
 
-def load_holdings():
-    if os.path.exists(HOLDINGS_FILE):
+@st.cache_resource
+def get_gsheet():
+    """Google Sheets 클라이언트 연결 (Streamlit Secrets에서 인증 정보 읽기)"""
+    try:
+        creds = Credentials.from_service_account_info(
+            st.secrets["gcp_service_account"],
+            scopes=SCOPES
+        )
+        client = gspread.authorize(creds)
+        sheet  = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
+        return sheet
+    except Exception as e:
+        st.warning(f"Google Sheets 연결 실패: {e}\n로컬 파일로 대체 실행합니다.")
+        return None
+
+def load_holdings() -> dict:
+    """Google Sheets에서 보유종목 불러오기. 실패 시 로컬 파일로 폴백."""
+    sheet = get_gsheet()
+    if sheet:
         try:
-            with open(HOLDINGS_FILE, "r", encoding="utf-8") as f:
+            rows = sheet.get_all_records()   # [{"종목코드":..,"종목명":..,"매수가":..}, ...]
+            return {
+                str(r["종목코드"]): {
+                    "name":      str(r["종목명"]),
+                    "buy_price": float(r["매수가"])
+                }
+                for r in rows if r.get("종목코드")
+            }
+        except Exception as e:
+            st.warning(f"시트 읽기 오류: {e}")
+    # 폴백: 로컬 파일
+    if os.path.exists("etf_holdings.json"):
+        try:
+            with open("etf_holdings.json", "r", encoding="utf-8") as f:
                 return json.load(f)
         except:
-            return {}
+            pass
     return {}
 
 def save_holdings(holdings: dict):
-    with open(HOLDINGS_FILE, "w", encoding="utf-8") as f:
+    """Google Sheets에 보유종목 저장. 실패 시 로컬 파일로 폴백."""
+    sheet = get_gsheet()
+    if sheet:
+        try:
+            # 시트 전체를 덮어쓰기 (헤더 + 데이터)
+            rows = [["종목코드", "종목명", "매수가"]]
+            for code, h in holdings.items():
+                rows.append([code, h["name"], h["buy_price"]])
+            sheet.clear()
+            sheet.update(rows, "A1")
+            return
+        except Exception as e:
+            st.warning(f"시트 저장 오류: {e}")
+    # 폴백: 로컬 파일
+    with open("etf_holdings.json", "w", encoding="utf-8") as f:
         json.dump(holdings, f, ensure_ascii=False, indent=2)
 
 # ── 내장 ETF 목록 (추세추종 스캔 대상) ────────────────────────────
