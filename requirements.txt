@@ -2,4 +2,4 @@ streamlit
 pandas
 matplotlib
 pykrx
-setuptool
+setuptools
