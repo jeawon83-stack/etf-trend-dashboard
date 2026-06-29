@@ -1,5 +1,5 @@
+setuptools>=65.0.0
 streamlit
 pandas
 matplotlib
-pykrx
-setuptools
+pykrx==1.2.8
