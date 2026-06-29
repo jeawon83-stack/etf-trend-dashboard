@@ -313,6 +313,10 @@ def make_chart(name: str, code: str, data: dict, buy_price: float = None):
     if buy_price is not None:
         ax.axhline(y=buy_price, color="#9C27B0", linewidth=1.3, linestyle="--", alpha=0.7,
                    label=f"내 매수가 ({buy_price:,.0f}원)")
+        # 손절 기준선 (-5%)
+        stop_loss_price = buy_price * 0.95
+        ax.axhline(y=stop_loss_price, color="#F44336", linewidth=1.3, linestyle=":", alpha=0.8,
+                   label=f"손절기준 -5% ({stop_loss_price:,.0f}원)")
 
     is_golden = data["매수신호"]
     ax.set_facecolor("#FFF9E6" if is_golden else "#E8F4FD")
@@ -473,14 +477,21 @@ with top_right:
                         st.session_state.selected_code = code
                         st.session_state.selected_name = name
                 else:
-                    cur_price = data["현재가"]
+                    cur_price  = data["현재가"]
                     profit_pct = (cur_price - buy_price) / buy_price * 100
                     signal_icon = data["신호"]   # 🟡 매수신호 / 🔵 매도신호 / ⚪ 보유·관망
                     profit_icon = "🔺" if profit_pct >= 0 else "🔻"
 
+                    # ── 손절 신호: 매수가 대비 -5% 이하 ──────────────
+                    if profit_pct <= -5.0:
+                        stop_loss = "🚨 손절"
+                    else:
+                        stop_loss = ""
+
                     btn_label = (
                         f"{name}  |  현재 {cur_price:,.0f}원  |  "
                         f"수익률 {profit_icon}{profit_pct:+.2f}%  |  {signal_icon}"
+                        + (f"  |  {stop_loss}" if stop_loss else "")
                     )
                     if st.button(btn_label, key=f"hold_{code}", use_container_width=True):
                         st.session_state.selected_code = code
@@ -519,14 +530,17 @@ else:
         ret_str   = f"{ret:+.2f}% ({days}일 보유)" if ret is not None else "골드크로스 없음"
 
         if buy_price is not None:
-            mcol1, mcol2, mcol3, mcol4, mcol5 = st.columns(5)
             my_profit = (data["현재가"] - buy_price) / buy_price * 100
+            stop_loss_signal = "🚨 손절 필요" if my_profit <= -5.0 else "✅ 정상"
+
+            mcol1, mcol2, mcol3, mcol4, mcol5, mcol6 = st.columns(6)
             mcol1.metric("현재가", f"{data['현재가']:,.0f}원",
                          f"{data['전일대비']:+,.0f} ({data['전일대비율']:+.2f}%)")
             mcol2.metric("내 매수가", f"{buy_price:,.0f}원")
             mcol3.metric("내 수익률", f"{my_profit:+.2f}%")
-            mcol4.metric("신호", data["신호"])
-            mcol5.metric("추세", data["추세"])
+            mcol4.metric("손절기준(-5%)", f"{buy_price * 0.95:,.0f}원")
+            mcol5.metric("손절 여부", stop_loss_signal)
+            mcol6.metric("매매신호", data["신호"])
         else:
             mcol1, mcol2, mcol3, mcol4 = st.columns(4)
             mcol1.metric("현재가", f"{data['현재가']:,.0f}원",
