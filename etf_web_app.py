@@ -123,22 +123,33 @@ COMMON_ETFS = {
     "117460": "KODEX 에너지화학",
     "140710": "KODEX 운송",
     "091170": "KODEX 은행",
+    "091180": "KODEX 자동차",
     "266390": "KODEX 경기소비재",
     "266410": "KODEX 필수소비재",
     "266360": "KODEX K콘텐츠",         # 구 KRX 미디어&엔터테인먼트
+    "445290": "KODEX 로봇액티브",
+    "495850": "KODEX 코리아밸류업",
+    "0038A0": "KODEX 미국휴머노이드로봇",
+    "0080G0": "KODEX 방산TOP10",
     # ── 해외 지수 ──────────────────────────────────────────────
     "379800": "KODEX 미국S&P500",
     "379810": "KODEX 미국나스닥100",
     "314250": "KODEX 미국빅테크10(H)",
+    "487230": "KODEX 미국AI전력핵심인프라",
+    "390390": "KODEX 미국반도체",
+    "0167Z0": "KODEX 미국우주항공",
     "099140": "KODEX China H",
     "283580": "KODEX 차이나CSI300",
     "101280": "KODEX 일본TOPIX100",
+    "251350": "KODEX MSCI선진국",
     # ── 원자재/채권 ────────────────────────────────────────────
     "132030": "KODEX 골드선물(H)",
+    "471230": "KODEX 국고채10년액티브",
     "308620": "KODEX 미국10년국채선물",
     "153130": "KODEX 단기채권",
     "214980": "KODEX 단기채권PLUS",
     "273130": "KODEX 종합채권(AA-이상)액티브",
+    "144600": "KODEX 은선물(H)",
 }
 
 # ── 인버스/레버리지(곱버스) 자동 제외 키워드 ───────────────────────
@@ -389,7 +400,7 @@ with top_left:
 
             btn_label = (
                 f"#{rank}  🟡 {name}  |  {data['현재가']:,.0f}원  |  "
-                f"경사 {slope:+.2f}%  |  추천수익률 {ret_str}  |  {data['추세']}"
+                f"경사 {slope:+.2f}%  |  예상수익률 {ret_str}  |  {data['추세']}"
             )
             if st.button(btn_label, key=f"rec_{code}", use_container_width=True):
                 st.session_state.selected_code = code
@@ -420,12 +431,13 @@ with top_right:
                 st.warning("검색 결과가 없습니다. 종목코드로 직접 입력해주세요.")
 
         if h_code_direct.strip():
-            code = h_code_direct.strip()
-            if code.isdigit() and len(code) == 6:
+            code = h_code_direct.strip().upper()  # 대문자로 통일
+            # 종목코드: 숫자 6자리 또는 알파벳+숫자 혼합 6~7자리 (예: 0072R0, Q500001 등)
+            if len(code) >= 5 and len(code) <= 7 and code.isalnum():
                 chosen_code = code
                 chosen_name = COMMON_ETFS.get(code, f"종목_{code}")
             else:
-                st.error("종목코드는 숫자 6자리여야 합니다.")
+                st.error("종목코드는 5~7자리 숫자/영문 조합이어야 합니다. (예: 102110, 0072R0)")
 
         buy_price_input = st.number_input("매수가격 (원)", min_value=0.0, step=100.0, format="%.0f")
 
