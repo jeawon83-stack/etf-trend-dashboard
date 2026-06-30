@@ -18,6 +18,7 @@ from pykrx import stock
 from datetime import datetime, timedelta
 import json
 import os
+import requests
 from google.oauth2.service_account import Credentials
 import gspread
 
@@ -329,9 +330,99 @@ def make_chart(name: str, code: str, data: dict, buy_price: float = None):
     return fig
 
 # ════════════════════════════════════════════════════════════════
-#  데이터 준비: 전체 ETF 스캔 (캐시 활용, 매 실행마다 재계산하지 않음)
+#  Gemini AI 애널리스트 코멘트
 # ════════════════════════════════════════════════════════════════
-@st.cache_data(ttl=1800)
+GEMINI_MODEL = "gemini-2.0-flash"
+GEMINI_URL   = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+
+def call_gemini(prompt: str) -> str:
+    """Gemini API 호출. Streamlit Secrets에 GEMINI_API_KEY가 있어야 동작합니다."""
+    try:
+        api_key = st.secrets["GEMINI_API_KEY"]
+    except Exception:
+        return "⚠️ Gemini API 키가 설정되지 않았어요. Streamlit Secrets에 GEMINI_API_KEY를 추가해주세요."
+
+    try:
+        resp = requests.post(
+            f"{GEMINI_URL}?key={api_key}",
+            headers={"Content-Type": "application/json"},
+            json={
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"temperature": 0.4, "maxOutputTokens": 700},
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        result = resp.json()
+        return result["candidates"][0]["content"]["parts"][0]["text"]
+    except Exception as e:
+        return f"⚠️ AI 응답 생성 중 오류가 발생했어요: {e}"
+
+def build_single_stock_prompt(name: str, code: str, data: dict, buy_price: float = None) -> str:
+    """개별 종목용 AI 분석 프롬프트 생성"""
+    ret      = data["기대수익률"]
+    days     = data["보유일수"]
+    ret_str  = f"{ret:+.2f}% ({days}일 보유)" if ret is not None else "골드크로스 기록 없음"
+    slope    = data["추세경사"]
+
+    holding_info = ""
+    if buy_price is not None:
+        my_profit = (data["현재가"] - buy_price) / buy_price * 100
+        holding_info = f"""
+- 사용자 매수가: {buy_price:,.0f}원
+- 사용자 현재 수익률: {my_profit:+.2f}%
+- 손절 기준(-5%) 도달 여부: {"예 (손절 검토 필요)" if my_profit <= -5.0 else "아니오"}
+"""
+
+    prompt = f"""당신은 한국 ETF 시장을 분석하는 애널리스트입니다. 아래 데이터를 바탕으로 이 종목에 대한 간결한 코멘트를 작성해주세요.
+
+[종목 정보]
+- 종목명: {name} ({code})
+- 현재가: {data['현재가']:,.0f}원 (전일대비 {data['전일대비']:+,.0f}원, {data['전일대비율']:+.2f}%)
+- MA5: {data['MA5']:,.0f} / MA20: {data['MA20']:,.0f} / MA120: {data['MA120']:,.0f}
+- 매매 신호: {data['신호']}
+- 추세: {data['추세']}
+- 최근 5일 추세 경사(MA20 변화율): {slope:+.2f}%
+- 직전 골드크로스 시점 매수 가정 수익률: {ret_str}
+{holding_info}
+
+[작성 지침]
+- 4~6문장 정도의 간결한 한국어로 작성
+- 현재 추세와 신호가 의미하는 바를 설명
+- 매수/매도/관망 중 어느 쪽에 가까운 상황인지 의견 제시 (단정적 투자 권유가 아닌 데이터 기반 해석으로)
+- 투자 손익에 대한 법적 책임이 없는 정보 제공 목적임을 마지막에 짧게 명시
+- 과도한 확신이나 자극적 표현은 피하고, 데이터에 기반한 차분한 톤 유지"""
+    return prompt
+
+def build_summary_prompt(sorted_golden: list) -> str:
+    """추천 종목 전체 요약용 AI 분석 프롬프트 생성"""
+    lines = []
+    for rank, (code, info) in enumerate(sorted_golden, 1):
+        name = info["name"]
+        data = info["data"]
+        ret  = data["기대수익률"]
+        ret_str = f"{ret:+.2f}%" if ret is not None else "-"
+        lines.append(
+            f"{rank}. {name}({code}) - 현재가 {data['현재가']:,.0f}원, "
+            f"경사 {data['추세경사']:+.2f}%, 예상수익률 {ret_str}, 추세: {data['추세']}"
+        )
+    stock_list_text = "\n".join(lines)
+
+    prompt = f"""당신은 한국 ETF 시장을 분석하는 애널리스트입니다. 아래는 추세추종 전략(매수: 5일선>20일선>120일선 정배열, 매도: 5일선<20일선)으로 골라낸 매수신호 상태 ETF 상위 종목들입니다. 이 목록을 보고 오늘 시장 전반에 대한 간결한 브리핑을 작성해주세요.
+
+[오늘의 매수신호 ETF 목록 - 추세 경사 급한 순]
+{stock_list_text}
+
+[작성 지침]
+- 5~7문장 정도의 한국어 브리핑
+- 어떤 섹터/테마가 강세를 보이는지 패턴을 짚어줄 것 (예: 반도체/2차전지 등 특정 산업군 쏠림 여부)
+- 국내 종목과 해외(미국/중국/일본 등) 종목 비중도 함께 언급
+- 채권/금 등 안전자산 ETF가 포함되어 있다면 그 의미도 짧게 해석
+- 전체적인 시장 분위기에 대한 균형 잡힌 해석 제공 (과도한 낙관/비관 지양)
+- 투자 손익에 대한 법적 책임이 없는 정보 제공 목적임을 마지막에 짧게 명시"""
+    return prompt
+
+
 def scan_all_etfs() -> dict:
     """내장 ETF 전체를 스캔해서 신호 결과 딕셔너리로 반환 (인버스/레버리지 계열은 항상 제외)"""
     results = {}
@@ -409,6 +500,15 @@ with top_left:
             if st.button(btn_label, key=f"rec_{code}", use_container_width=True):
                 st.session_state.selected_code = code
                 st.session_state.selected_name = name
+
+        st.divider()
+        if st.button("🤖 AI 시장 브리핑 보기", key="ai_summary_btn", use_container_width=True):
+            with st.spinner("AI가 오늘의 추천 종목을 분석하고 있어요..."):
+                summary_text = call_gemini(build_summary_prompt(sorted_golden))
+            st.session_state.ai_summary_text = summary_text
+
+        if st.session_state.get("ai_summary_text"):
+            st.info(st.session_state.ai_summary_text)
 
 # ─────────────────────────────────────────────────────
 # 우측: 내 보유 종목
@@ -552,3 +652,13 @@ else:
         fig = make_chart(name, code, data, buy_price=buy_price)
         st.pyplot(fig)
         plt.close(fig)
+
+        st.divider()
+        if st.button("🤖 AI 애널리스트 의견 보기", key=f"ai_single_{code}", use_container_width=True):
+            with st.spinner(f"AI가 {name} 종목을 분석하고 있어요..."):
+                prompt = build_single_stock_prompt(name, code, data, buy_price=buy_price)
+                comment_text = call_gemini(prompt)
+            st.session_state[f"ai_comment_{code}"] = comment_text
+
+        if st.session_state.get(f"ai_comment_{code}"):
+            st.info(st.session_state[f"ai_comment_{code}"])

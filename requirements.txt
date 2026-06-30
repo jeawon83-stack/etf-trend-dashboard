@@ -5,3 +5,4 @@ matplotlib
 pykrx==1.2.8
 gspread
 google-auth
+requests
