@@ -332,31 +332,40 @@ def make_chart(name: str, code: str, data: dict, buy_price: float = None):
 # ════════════════════════════════════════════════════════════════
 #  Gemini AI 애널리스트 코멘트
 # ════════════════════════════════════════════════════════════════
-GEMINI_MODEL = "gemini-2.0-flash"
-GEMINI_URL   = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+GEMINI_MODELS = ["gemini-flash-latest", "gemini-2.5-flash", "gemini-3.1-flash-lite"]
 
 def call_gemini(prompt: str) -> str:
-    """Gemini API 호출. Streamlit Secrets에 GEMINI_API_KEY가 있어야 동작합니다."""
+    """Gemini API 호출. Streamlit Secrets에 GEMINI_API_KEY가 있어야 동작합니다.
+    모델이 지원 중단되어 404가 나는 경우를 대비해 여러 모델명을 순서대로 시도합니다."""
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
     except Exception:
         return "⚠️ Gemini API 키가 설정되지 않았어요. Streamlit Secrets에 GEMINI_API_KEY를 추가해주세요."
 
-    try:
-        resp = requests.post(
-            f"{GEMINI_URL}?key={api_key}",
-            headers={"Content-Type": "application/json"},
-            json={
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"temperature": 0.4, "maxOutputTokens": 700},
-            },
-            timeout=30,
-        )
-        resp.raise_for_status()
-        result = resp.json()
-        return result["candidates"][0]["content"]["parts"][0]["text"]
-    except Exception as e:
-        return f"⚠️ AI 응답 생성 중 오류가 발생했어요: {e}"
+    last_error = None
+    for model in GEMINI_MODELS:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        try:
+            resp = requests.post(
+                f"{url}?key={api_key}",
+                headers={"Content-Type": "application/json"},
+                json={
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": {"temperature": 0.4, "maxOutputTokens": 700},
+                },
+                timeout=30,
+            )
+            if resp.status_code == 404:
+                last_error = f"{model}: 404 (모델 없음)"
+                continue   # 다음 모델로 재시도
+            resp.raise_for_status()
+            result = resp.json()
+            return result["candidates"][0]["content"]["parts"][0]["text"]
+        except Exception as e:
+            last_error = f"{model}: {e}"
+            continue
+
+    return f"⚠️ AI 응답 생성 중 오류가 발생했어요: {last_error}"
 
 def build_single_stock_prompt(name: str, code: str, data: dict, buy_price: float = None) -> str:
     """개별 종목용 AI 분석 프롬프트 생성"""
