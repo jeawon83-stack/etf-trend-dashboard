@@ -351,7 +351,13 @@ def call_gemini(prompt: str) -> str:
                 headers={"Content-Type": "application/json"},
                 json={
                     "contents": [{"parts": [{"text": prompt}]}],
-                    "generationConfig": {"temperature": 0.4, "maxOutputTokens": 700},
+                    "generationConfig": {
+                        "temperature": 0.4,
+                        "maxOutputTokens": 1500,
+                        # 최신 모델(2.5/3.x)은 답변 전 내부 "사고" 과정을 거치는데,
+                        # 이를 꺼야 사고 과정이 답변에 섞이거나 토큰을 다 써서 잘리는 문제를 막을 수 있음
+                        "thinkingConfig": {"thinkingBudget": 0},
+                    },
                 },
                 timeout=30,
             )
@@ -360,7 +366,19 @@ def call_gemini(prompt: str) -> str:
                 continue   # 다음 모델로 재시도
             resp.raise_for_status()
             result = resp.json()
-            return result["candidates"][0]["content"]["parts"][0]["text"]
+
+            candidate = result["candidates"][0]
+            parts = candidate.get("content", {}).get("parts", [])
+            # 여러 part가 있을 수 있으므로 text만 모두 합침 (thinking part는 thinkingBudget=0이면 생기지 않음)
+            text = "".join(p.get("text", "") for p in parts).strip()
+
+            if not text:
+                # 토큰 부족 등으로 본문이 비어있는 경우
+                finish_reason = candidate.get("finishReason", "UNKNOWN")
+                last_error = f"{model}: 빈 응답 (finishReason={finish_reason})"
+                continue
+
+            return text
         except Exception as e:
             last_error = f"{model}: {e}"
             continue
@@ -400,7 +418,8 @@ def build_single_stock_prompt(name: str, code: str, data: dict, buy_price: float
 - 현재 추세와 신호가 의미하는 바를 설명
 - 매수/매도/관망 중 어느 쪽에 가까운 상황인지 의견 제시 (단정적 투자 권유가 아닌 데이터 기반 해석으로)
 - 투자 손익에 대한 법적 책임이 없는 정보 제공 목적임을 마지막에 짧게 명시
-- 과도한 확신이나 자극적 표현은 피하고, 데이터에 기반한 차분한 톤 유지"""
+- 과도한 확신이나 자극적 표현은 피하고, 데이터에 기반한 차분한 톤 유지
+- 분석 과정이나 검토 메모 없이, 사용자에게 보여줄 최종 코멘트 문장만 바로 작성"""
     return prompt
 
 def build_summary_prompt(sorted_golden: list) -> str:
@@ -428,7 +447,8 @@ def build_summary_prompt(sorted_golden: list) -> str:
 - 국내 종목과 해외(미국/중국/일본 등) 종목 비중도 함께 언급
 - 채권/금 등 안전자산 ETF가 포함되어 있다면 그 의미도 짧게 해석
 - 전체적인 시장 분위기에 대한 균형 잡힌 해석 제공 (과도한 낙관/비관 지양)
-- 투자 손익에 대한 법적 책임이 없는 정보 제공 목적임을 마지막에 짧게 명시"""
+- 투자 손익에 대한 법적 책임이 없는 정보 제공 목적임을 마지막에 짧게 명시
+- 분석 과정이나 검토 메모 없이, 사용자에게 보여줄 최종 브리핑 문장만 바로 작성"""
     return prompt
 
 
