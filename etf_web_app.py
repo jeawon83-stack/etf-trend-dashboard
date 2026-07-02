@@ -467,21 +467,27 @@ def scan_all_etfs() -> dict:
 # ════════════════════════════════════════════════════════════════
 #  UI 시작
 # ════════════════════════════════════════════════════════════════
-st.title("📈 ETF 추세 추종 대시보드")
-st.caption(f"기준일: {datetime.today().strftime('%Y년 %m월 %d일')}  |  이동평균: MA5 / MA20 / MA120")
+
+# ── 타이틀 (높이 줄임) ──────────────────────────────────────────
+st.markdown(
+    f"<h3 style='margin-bottom:0'>📈 ETF 추세 추종 대시보드 &nbsp;"
+    f"<span style='font-size:0.6em; color:gray; font-weight:normal'>"
+    f"기준일 {datetime.today().strftime('%Y.%m.%d')} &nbsp;|&nbsp; MA5 / MA20 / MA120</span></h3>",
+    unsafe_allow_html=True
+)
 
 # 세션 상태 초기화
 if "holdings" not in st.session_state:
-    st.session_state.holdings = load_holdings()   # {code: {"name":.., "buy_price":..}}
+    st.session_state.holdings = load_holdings()
 if "selected_code" not in st.session_state:
     st.session_state.selected_code = None
 if "selected_name" not in st.session_state:
     st.session_state.selected_name = None
 
-# 새로고침 버튼
+# 새로고침 버튼 (타이틀 바로 아래)
 col_refresh, _ = st.columns([1, 5])
 with col_refresh:
-    if st.button("🔄 전체 데이터 새로고침", use_container_width=True):
+    if st.button("🔄 새로고침", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
 
@@ -491,13 +497,13 @@ st.divider()
 top_left, top_right = st.columns(2)
 
 # ─────────────────────────────────────────────────────
-# 좌측: 추세추종 추천 종목 (골드크로스 자동 스캔)
+# 좌측: 추세추종 추천 종목
 # ─────────────────────────────────────────────────────
 with top_left:
-    st.subheader("🟡 추세추종 추천 종목 (골드크로스 + 급경사 TOP 10)")
-    st.caption(f"내장 KODEX ETF {len(COMMON_ETFS)}개(인버스·레버리지 제외) 중 매수신호(5>20>120 정배열) 상태이면서, 최근 5일간 추세 경사(MA20 변화율)가 가장 급한 10개")
+    st.markdown("#### 🟡 추세추종 추천 TOP 10")
+    st.caption(f"KODEX ETF {len(COMMON_ETFS)}개 중 정배열(5>20>120) + 급경사 상위 10개")
 
-    with st.spinner("ETF 전체 스캔 중... (처음 실행 시 1분 정도 걸려요)"):
+    with st.spinner("ETF 전체 스캔 중..."):
         scan_results = scan_all_etfs()
 
     golden_list = {
@@ -508,29 +514,29 @@ with top_left:
     if not golden_list:
         st.info("현재 매수신호(정배열) 상태인 ETF가 없습니다.")
     else:
-        # 추세 경사(MA20 5일 변화율)가 급한 순으로 정렬 -> 상위 10개만
         sorted_golden = sorted(
             golden_list.items(),
             key=lambda x: x[1]["data"]["추세경사"],
             reverse=True
         )[:10]
 
-        for rank, (code, info) in enumerate(sorted_golden, 1):
-            name  = info["name"]
-            data  = info["data"]
-            ret   = data["기대수익률"]
-            slope = data["추세경사"]
-            ret_str = f"{ret:+.2f}%" if ret is not None else "-"
+        # 고정 높이 컨테이너 (약 5개 표시, 나머지 스크롤)
+        with st.container(height=300):
+            for rank, (code, info) in enumerate(sorted_golden, 1):
+                name  = info["name"]
+                data  = info["data"]
+                ret   = data["기대수익률"]
+                slope = data["추세경사"]
+                ret_str = f"{ret:+.2f}%" if ret is not None else "-"
 
-            btn_label = (
-                f"#{rank}  🟡 {name}  |  {data['현재가']:,.0f}원  |  "
-                f"경사 {slope:+.2f}%  |  예상수익률 {ret_str}  |  {data['추세']}"
-            )
-            if st.button(btn_label, key=f"rec_{code}", use_container_width=True):
-                st.session_state.selected_code = code
-                st.session_state.selected_name = name
+                btn_label = (
+                    f"#{rank} 🟡 {name}  |  {data['현재가']:,.0f}원  |  "
+                    f"경사 {slope:+.2f}%  |  예상수익률 {ret_str}  |  {data['추세']}"
+                )
+                if st.button(btn_label, key=f"rec_{code}", use_container_width=True):
+                    st.session_state.selected_code = code
+                    st.session_state.selected_name = name
 
-        st.divider()
         if st.button("🤖 AI 시장 브리핑 보기", key="ai_summary_btn", use_container_width=True):
             with st.spinner("AI가 오늘의 추천 종목을 분석하고 있어요..."):
                 summary_text = call_gemini(build_summary_prompt(sorted_golden))
@@ -543,8 +549,9 @@ with top_left:
 # 우측: 내 보유 종목
 # ─────────────────────────────────────────────────────
 with top_right:
-    st.subheader("💼 내 보유 종목")
+    st.markdown("#### 💼 내 보유 종목")
 
+    # 종목 추가 폼 (접힘 상태로 기본 표시)
     with st.expander("➕ 보유 종목 추가", expanded=len(st.session_state.holdings) == 0):
         col1, col2 = st.columns(2)
         with col1:
@@ -564,80 +571,74 @@ with top_right:
                 st.warning("검색 결과가 없습니다. 종목코드로 직접 입력해주세요.")
 
         if h_code_direct.strip():
-            code = h_code_direct.strip().upper()  # 대문자로 통일
-            # 종목코드: 숫자 6자리 또는 알파벳+숫자 혼합 6~7자리 (예: 0072R0, Q500001 등)
+            code = h_code_direct.strip().upper()
             if len(code) >= 5 and len(code) <= 7 and code.isalnum():
                 chosen_code = code
                 chosen_name = COMMON_ETFS.get(code, f"종목_{code}")
             else:
-                st.error("종목코드는 5~7자리 숫자/영문 조합이어야 합니다. (예: 102110, 0072R0)")
+                st.error("종목코드는 5~7자리 숫자/영문 조합이어야 합니다.")
 
         buy_price_input = st.number_input("매수가격 (원)", min_value=0.0, step=100.0, format="%.0f")
 
-        if st.button("✅ 보유 종목으로 추가", use_container_width=True):
+        if st.button("✅ 추가", use_container_width=True):
             if chosen_code and buy_price_input > 0:
                 st.session_state.holdings[chosen_code] = {
                     "name": chosen_name,
                     "buy_price": buy_price_input
                 }
                 save_holdings(st.session_state.holdings)
-                st.success(f"[{chosen_name}] 매수가 {buy_price_input:,.0f}원으로 추가됨!")
+                st.success(f"[{chosen_name}] {buy_price_input:,.0f}원으로 추가됨!")
                 st.rerun()
             elif not chosen_code:
                 st.error("종목을 검색하거나 코드를 입력해주세요.")
             else:
                 st.error("매수가격을 입력해주세요.")
 
-    # 보유 종목 리스트 표시
+    # 보유 종목 리스트 (고정 높이 + 스크롤)
     if not st.session_state.holdings:
-        st.info("아직 등록된 보유 종목이 없습니다. 위에서 추가해주세요.")
+        st.info("아직 등록된 보유 종목이 없습니다.")
     else:
-        for code, h in list(st.session_state.holdings.items()):
-            name      = h["name"]
-            buy_price = h["buy_price"]
+        with st.container(height=300):
+            for code, h in list(st.session_state.holdings.items()):
+                name      = h["name"]
+                buy_price = h["buy_price"]
 
-            df   = fetch_data(code)
-            data = calc_signals(df)
+                df   = fetch_data(code)
+                data = calc_signals(df)
 
-            row_col1, row_col2 = st.columns([5, 1])
-            with row_col1:
-                if data is None:
-                    if st.button(f"⚠️ {name} (데이터 부족)", key=f"hold_{code}", use_container_width=True):
-                        st.session_state.selected_code = code
-                        st.session_state.selected_name = name
-                else:
-                    cur_price  = data["현재가"]
-                    profit_pct = (cur_price - buy_price) / buy_price * 100
-                    signal_icon = data["신호"]   # 🟡 매수신호 / 🔵 매도신호 / ⚪ 보유·관망
-                    profit_icon = "🔺" if profit_pct >= 0 else "🔻"
-
-                    # ── 손절 신호: 매수가 대비 -5% 이하 ──────────────
-                    if profit_pct <= -5.0:
-                        stop_loss = "🚨 손절"
+                row_col1, row_col2 = st.columns([5, 1])
+                with row_col1:
+                    if data is None:
+                        if st.button(f"⚠️ {name} (데이터 부족)", key=f"hold_{code}", use_container_width=True):
+                            st.session_state.selected_code = code
+                            st.session_state.selected_name = name
                     else:
-                        stop_loss = ""
+                        cur_price  = data["현재가"]
+                        profit_pct = (cur_price - buy_price) / buy_price * 100
+                        signal_icon = data["신호"]
+                        profit_icon = "🔺" if profit_pct >= 0 else "🔻"
+                        stop_loss   = "  |  🚨 손절" if profit_pct <= -5.0 else ""
 
-                    btn_label = (
-                        f"{name}  |  현재 {cur_price:,.0f}원  |  "
-                        f"수익률 {profit_icon}{profit_pct:+.2f}%  |  {signal_icon}"
-                        + (f"  |  {stop_loss}" if stop_loss else "")
-                    )
-                    if st.button(btn_label, key=f"hold_{code}", use_container_width=True):
-                        st.session_state.selected_code = code
-                        st.session_state.selected_name = name
-            with row_col2:
-                if st.button("🗑️", key=f"del_hold_{code}"):
-                    del st.session_state.holdings[code]
-                    save_holdings(st.session_state.holdings)
-                    st.rerun()
+                        btn_label = (
+                            f"{name}  |  현재 {cur_price:,.0f}원  |  "
+                            f"수익률 {profit_icon}{profit_pct:+.2f}%  |  {signal_icon}{stop_loss}"
+                        )
+                        if st.button(btn_label, key=f"hold_{code}", use_container_width=True):
+                            st.session_state.selected_code = code
+                            st.session_state.selected_name = name
+                with row_col2:
+                    if st.button("🗑️", key=f"del_hold_{code}"):
+                        del st.session_state.holdings[code]
+                        save_holdings(st.session_state.holdings)
+                        st.rerun()
 
 st.divider()
 
 # ── 하단: 선택한 종목의 상세 차트 ───────────────────────────────
-st.subheader("📊 종목 상세 차트")
+st.markdown("#### 📊 종목 상세 차트")
 
 if st.session_state.selected_code is None:
-    st.info("👆 위에서 추천 종목이나 보유 종목을 클릭하면 여기에 추세추종 차트가 표시됩니다.")
+    st.info("👆 위에서 추천 종목이나 보유 종목을 클릭하면 여기에 차트가 표시됩니다.")
 else:
     code = st.session_state.selected_code
     name = st.session_state.selected_name
@@ -646,20 +647,18 @@ else:
     data = calc_signals(df)
 
     if data is None:
-        st.error(f"{name} ({code}) 데이터가 부족하여 차트를 그릴 수 없습니다. (상장 후 120거래일 이상 필요)")
+        st.error(f"{name} ({code}) 데이터가 부족합니다. (상장 후 120거래일 이상 필요)")
     else:
-        # 보유 종목이면 매수가 정보 가져오기
         buy_price = None
         if code in st.session_state.holdings:
             buy_price = st.session_state.holdings[code]["buy_price"]
 
-        # 지표 카드
-        ret       = data["기대수익률"]
-        days      = data["보유일수"]
-        ret_str   = f"{ret:+.2f}% ({days}일 보유)" if ret is not None else "골드크로스 없음"
+        ret     = data["기대수익률"]
+        days    = data["보유일수"]
+        ret_str = f"{ret:+.2f}% ({days}일 보유)" if ret is not None else "골드크로스 없음"
 
         if buy_price is not None:
-            my_profit = (data["현재가"] - buy_price) / buy_price * 100
+            my_profit        = (data["현재가"] - buy_price) / buy_price * 100
             stop_loss_signal = "🚨 손절 필요" if my_profit <= -5.0 else "✅ 정상"
 
             mcol1, mcol2, mcol3, mcol4, mcol5, mcol6 = st.columns(6)
