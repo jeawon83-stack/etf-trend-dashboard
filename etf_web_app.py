@@ -621,86 +621,92 @@ with top_left:
 with top_right:
     st.markdown("#### 💼 내 보유 종목")
 
-    # 종목 추가 폼 (접힘 상태로 기본 표시)
-    with st.expander("➕ 보유 종목 추가", expanded=len(st.session_state.holdings) == 0):
-        col1, col2 = st.columns(2)
-        with col1:
-            h_keyword = st.text_input("종목 검색", placeholder="예: TIGER 200", key="holding_search")
-        with col2:
-            h_code_direct = st.text_input("또는 종목코드 직접입력", placeholder="예: 102110", key="holding_code_direct")
+    @st.fragment
+    def render_holdings_section():
+        # 종목 추가 폼 (접힘 상태로 기본 표시)
+        with st.expander("➕ 보유 종목 추가", expanded=len(st.session_state.holdings) == 0):
+            col1, col2 = st.columns(2)
+            with col1:
+                h_keyword = st.text_input("종목 검색", placeholder="예: TIGER 200", key="holding_search")
+            with col2:
+                h_code_direct = st.text_input("또는 종목코드 직접입력", placeholder="예: 102110", key="holding_code_direct")
 
-        chosen_code = None
-        chosen_name = None
+            chosen_code = None
+            chosen_name = None
 
-        if h_keyword:
-            sr = search_etf(h_keyword)
-            if sr:
-                sel = st.selectbox("검색 결과 선택", list(sr.keys()), key="holding_select")
-                chosen_name, chosen_code = sr[sel]
-            else:
-                st.warning("검색 결과가 없습니다. 종목코드로 직접 입력해주세요.")
+            if h_keyword:
+                sr = search_etf(h_keyword)
+                if sr:
+                    sel = st.selectbox("검색 결과 선택", list(sr.keys()), key="holding_select")
+                    chosen_name, chosen_code = sr[sel]
+                else:
+                    st.warning("검색 결과가 없습니다. 종목코드로 직접 입력해주세요.")
 
-        if h_code_direct.strip():
-            code = h_code_direct.strip().upper()
-            if len(code) >= 5 and len(code) <= 7 and code.isalnum():
-                chosen_code = code
-                chosen_name = get_etf_universe().get(code, f"종목_{code}")
-            else:
-                st.error("종목코드는 5~7자리 숫자/영문 조합이어야 합니다.")
+            if h_code_direct.strip():
+                code = h_code_direct.strip().upper()
+                if len(code) >= 5 and len(code) <= 7 and code.isalnum():
+                    chosen_code = code
+                    chosen_name = get_etf_universe().get(code, f"종목_{code}")
+                else:
+                    st.error("종목코드는 5~7자리 숫자/영문 조합이어야 합니다.")
 
-        buy_price_input = st.number_input("매수가격 (원)", min_value=0.0, step=100.0, format="%.0f")
+            buy_price_input = st.number_input("매수가격 (원)", min_value=0.0, step=100.0, format="%.0f")
 
-        if st.button("✅ 추가", use_container_width=True):
-            if chosen_code and buy_price_input > 0:
-                st.session_state.holdings[chosen_code] = {
-                    "name": chosen_name,
-                    "buy_price": buy_price_input
-                }
-                save_holdings(st.session_state.holdings)
-                st.success(f"[{chosen_name}] {buy_price_input:,.0f}원으로 추가됨!")
-                st.rerun()
-            elif not chosen_code:
-                st.error("종목을 검색하거나 코드를 입력해주세요.")
-            else:
-                st.error("매수가격을 입력해주세요.")
+            if st.button("✅ 추가", use_container_width=True):
+                if chosen_code and buy_price_input > 0:
+                    st.session_state.holdings[chosen_code] = {
+                        "name": chosen_name,
+                        "buy_price": buy_price_input
+                    }
+                    save_holdings(st.session_state.holdings)
+                    st.success(f"[{chosen_name}] {buy_price_input:,.0f}원으로 추가됨!")
+                    st.rerun(scope="fragment")  # 이 섹션만 새로고침 (좌측 추천 목록은 그대로 유지)
+                elif not chosen_code:
+                    st.error("종목을 검색하거나 코드를 입력해주세요.")
+                else:
+                    st.error("매수가격을 입력해주세요.")
 
-    # 보유 종목 리스트 (고정 높이 + 스크롤)
-    if not st.session_state.holdings:
-        st.info("아직 등록된 보유 종목이 없습니다.")
-    else:
-        with st.container(height=300):
-            for code, h in list(st.session_state.holdings.items()):
-                name      = h["name"]
-                buy_price = h["buy_price"]
+        # 보유 종목 리스트 (고정 높이 + 스크롤)
+        if not st.session_state.holdings:
+            st.info("아직 등록된 보유 종목이 없습니다.")
+        else:
+            with st.container(height=300):
+                for code, h in list(st.session_state.holdings.items()):
+                    name      = h["name"]
+                    buy_price = h["buy_price"]
 
-                df   = fetch_data(code)
-                data = calc_signals(df)
+                    df   = fetch_data(code)
+                    data = calc_signals(df)
 
-                row_col1, row_col2 = st.columns([5, 1])
-                with row_col1:
-                    if data is None:
-                        if st.button(f"⚠️ {name} (데이터 부족)", key=f"hold_{code}", use_container_width=True):
-                            st.session_state.selected_code = code
-                            st.session_state.selected_name = name
-                    else:
-                        cur_price  = data["현재가"]
-                        profit_pct = (cur_price - buy_price) / buy_price * 100
-                        signal_icon = data["신호"]
-                        profit_icon = "🔺" if profit_pct >= 0 else "🔻"
-                        stop_loss   = "  |  🚨 손절" if profit_pct <= -5.0 else ""
+                    row_col1, row_col2 = st.columns([5, 1])
+                    with row_col1:
+                        if data is None:
+                            if st.button(f"⚠️ {name} (데이터 부족)", key=f"hold_{code}", use_container_width=True):
+                                st.session_state.selected_code = code
+                                st.session_state.selected_name = name
+                                st.rerun()  # 차트 영역(fragment 바깥)을 갱신하려면 전체 새로고침 필요
+                        else:
+                            cur_price  = data["현재가"]
+                            profit_pct = (cur_price - buy_price) / buy_price * 100
+                            signal_icon = data["신호"]
+                            profit_icon = "🔺" if profit_pct >= 0 else "🔻"
+                            stop_loss   = "  |  🚨 손절" if profit_pct <= -5.0 else ""
 
-                        btn_label = (
-                            f"{name}  |  현재 {cur_price:,.0f}원  |  "
-                            f"수익률 {profit_icon}{profit_pct:+.2f}%  |  {signal_icon}{stop_loss}"
-                        )
-                        if st.button(btn_label, key=f"hold_{code}", use_container_width=True):
-                            st.session_state.selected_code = code
-                            st.session_state.selected_name = name
-                with row_col2:
-                    if st.button("🗑️", key=f"del_hold_{code}"):
-                        del st.session_state.holdings[code]
-                        save_holdings(st.session_state.holdings)
-                        st.rerun()
+                            btn_label = (
+                                f"{name}  |  현재 {cur_price:,.0f}원  |  "
+                                f"수익률 {profit_icon}{profit_pct:+.2f}%  |  {signal_icon}{stop_loss}"
+                            )
+                            if st.button(btn_label, key=f"hold_{code}", use_container_width=True):
+                                st.session_state.selected_code = code
+                                st.session_state.selected_name = name
+                                st.rerun()  # 차트 영역(fragment 바깥)을 갱신하려면 전체 새로고침 필요
+                    with row_col2:
+                        if st.button("🗑️", key=f"del_hold_{code}"):
+                            del st.session_state.holdings[code]
+                            save_holdings(st.session_state.holdings)
+                            st.rerun(scope="fragment")  # 이 섹션만 새로고침 (좌측 추천 목록은 다시 안 돌음)
+
+    render_holdings_section()
 
 st.divider()
 
