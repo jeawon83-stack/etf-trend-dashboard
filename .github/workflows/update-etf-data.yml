@@ -1,0 +1,45 @@
+# 매일 저녁(한국시간) KRX ETF 데이터를 자동으로 수집해서
+# etf_data.db 를 갱신하고, 변경사항을 저장소에 자동 커밋/푸시합니다.
+#
+# ★ 이 파일이 동작하려면 GitHub 저장소 Settings > Secrets and variables
+#    > Actions 에서 KRX_AUTH_KEY 라는 이름으로 인증키를 등록해야 합니다.
+
+name: Update ETF Data
+
+on:
+  schedule:
+    # cron은 UTC 기준. 09:30 UTC = 18:30 KST (한국 장 마감 후, 데이터 확정 이후)
+    # 월~금만 실행 (토요일=6, 일요일=0 인 KST 기준이지만 cron은 UTC 요일이라 1~5로 지정)
+    - cron: '30 9 * * 1-5'
+  workflow_dispatch: {}   # Actions 탭에서 수동으로도 실행 가능하게 남겨둠
+
+permissions:
+  contents: write   # DB 파일을 커밋/푸시하기 위해 필요
+
+jobs:
+  update-etf-db:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 저장소 체크아웃
+        uses: actions/checkout@v4
+
+      - name: 파이썬 설치
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 필요한 패키지 설치
+        run: pip install requests
+
+      - name: KRX 데이터 수집기 실행
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+        run: python krx_data_collector.py
+
+      - name: 변경사항 있으면 자동 커밋 & 푸시
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add etf_data.db
+          git diff --staged --quiet || git commit -m "chore: ETF 데이터 자동 갱신 $(date +%Y-%m-%d)"
+          git push
