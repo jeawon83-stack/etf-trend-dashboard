@@ -161,13 +161,74 @@ def is_excluded(name: str) -> bool:
     return any(kw in name for kw in EXCLUDE_KEYWORDS)
 
 # 내장 목록 자체에서도 제외 키워드에 해당하는 항목은 미리 제거 (이중 안전장치)
+# ※ KRX API 조회가 실패할 때를 대비한 "폴백(fallback)" 목록으로만 사용됩니다.
 COMMON_ETFS = {code: name for code, name in COMMON_ETFS.items() if not is_excluded(name)}
 
+# ── KRX Open API: ETF 전종목 목록 동적 조회 ─────────────────────────
+# 하드코딩된 COMMON_ETFS 대신, 매일 KRX에 "오늘 상장된 ETF 전체" 를 물어봐서
+# 목록을 자동으로 채웁니다. 새로 상장된 ETF도 별도 코드 수정 없이 자동으로 잡힙니다.
+KRX_ETF_API_URL = "https://data-dbg.krx.co.kr/svc/apis/etp/etf_bydd_trd"
+
+def _get_krx_auth_key():
+    """Streamlit Secrets 또는 환경변수에서 KRX 인증키를 읽어옵니다."""
+    try:
+        if "KRX_AUTH_KEY" in st.secrets:
+            return st.secrets["KRX_AUTH_KEY"]
+    except Exception:
+        pass
+    return os.environ.get("KRX_AUTH_KEY")
+
+def _fetch_krx_etf_list(bas_dd: str):
+    """특정 기준일자의 ETF 전체 목록을 KRX API에서 조회. 실패/휴장이면 None 반환."""
+    auth_key = _get_krx_auth_key()
+    if not auth_key:
+        return None
+    try:
+        resp = requests.get(
+            KRX_ETF_API_URL,
+            headers={"AUTH_KEY": auth_key},
+            params={"basDd": bas_dd},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            return None
+        rows = resp.json().get("OutBlock_1", [])
+        if not rows:
+            return None  # 휴장일이거나 데이터 없음
+        return {row["ISU_CD"]: row["ISU_NM"] for row in rows if row.get("ISU_CD")}
+    except Exception:
+        return None
+
+@st.cache_data(ttl=21600)  # 6시간 캐시 (하루 한 번만 갱신되면 충분)
+def get_krx_etf_universe() -> dict:
+    """
+    KRX API로 ETF 전체 목록을 가져옵니다.
+    - 오늘 날짜부터 최대 5영업일 전까지 거슬러 올라가며 시도 (휴장일/주말 대비)
+    - 인버스/레버리지/곱버스는 자동 제외
+    - API 인증키가 없거나 전부 실패하면 내장 COMMON_ETFS로 폴백
+    """
+    d = datetime.today()
+    for _ in range(7):  # 최대 7일 전까지 시도 (연휴 대비)
+        bas_dd = d.strftime("%Y%m%d")
+        etf_map = _fetch_krx_etf_list(bas_dd)
+        if etf_map:
+            filtered = {code: name for code, name in etf_map.items() if not is_excluded(name)}
+            if filtered:
+                return filtered
+        d -= timedelta(days=1)
+    # 전부 실패 → 폴백
+    return COMMON_ETFS
+
+def get_etf_universe() -> dict:
+    """현재 앱 전체에서 사용할 ETF 유니버스 (KRX API 우선, 실패 시 내장 목록)"""
+    universe = get_krx_etf_universe()
+    return universe if universe else COMMON_ETFS
+
 def search_etf(keyword: str) -> dict:
-    """내장 ETF 목록에서 검색 (인버스/레버리지는 결과에서 항상 제외)"""
+    """ETF 유니버스(KRX API 또는 폴백)에서 검색 (인버스/레버리지는 결과에서 항상 제외)"""
     results = {}
     keyword_lower = keyword.lower().replace(" ", "")
-    for code, name in COMMON_ETFS.items():
+    for code, name in get_etf_universe().items():
         if is_excluded(name):
             continue
         if keyword_lower in name.lower().replace(" ", ""):
@@ -453,9 +514,9 @@ def build_summary_prompt(sorted_golden: list) -> str:
 
 
 def scan_all_etfs() -> dict:
-    """내장 ETF 전체를 스캔해서 신호 결과 딕셔너리로 반환 (인버스/레버리지 계열은 항상 제외)"""
+    """ETF 유니버스(KRX API 또는 폴백) 전체를 스캔해서 신호 결과 딕셔너리로 반환 (인버스/레버리지 계열은 항상 제외)"""
     results = {}
-    for code, name in COMMON_ETFS.items():
+    for code, name in get_etf_universe().items():
         if is_excluded(name):
             continue
         df   = fetch_data(code)
@@ -501,7 +562,9 @@ top_left, top_right = st.columns(2)
 # ─────────────────────────────────────────────────────
 with top_left:
     st.markdown("#### 🟡 추세추종 추천 TOP 10")
-    st.caption(f"KODEX ETF {len(COMMON_ETFS)}개 중 정배열(5>20>120) + 급경사 상위 10개")
+    _universe = get_etf_universe()
+    _source_label = "KRX API" if _universe is not COMMON_ETFS else "내장 목록(폴백)"
+    st.caption(f"국내 ETF {len(_universe)}개 ({_source_label}) 중 정배열(5>20>120) + 급경사 상위 10개")
 
     with st.spinner("ETF 전체 스캔 중..."):
         scan_results = scan_all_etfs()
@@ -574,7 +637,7 @@ with top_right:
             code = h_code_direct.strip().upper()
             if len(code) >= 5 and len(code) <= 7 and code.isalnum():
                 chosen_code = code
-                chosen_name = COMMON_ETFS.get(code, f"종목_{code}")
+                chosen_name = get_etf_universe().get(code, f"종목_{code}")
             else:
                 st.error("종목코드는 5~7자리 숫자/영문 조합이어야 합니다.")
 
