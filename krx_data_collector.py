@@ -136,7 +136,7 @@ def save_day(conn: sqlite3.Connection, rows: list) -> int:
 
 
 def business_days_missing(conn, start: str, end: str) -> list:
-    """start~end 중 DB에 아직 없는 평일 목록 (공휴일은 API가 빈 값을 줘서 자동 스킵됨)"""
+    """start~end 중 DB에 아예 없는 평일 목록 (공휴일은 API가 빈 값을 줘서 자동 스킵됨)"""
     existing = {r[0] for r in conn.execute("SELECT DISTINCT bas_dd FROM etf_daily").fetchall()}
     d = datetime.strptime(start, "%Y%m%d")
     end_d = datetime.strptime(end, "%Y%m%d")
@@ -148,6 +148,24 @@ def business_days_missing(conn, start: str, end: str) -> list:
                 result.append(dd)
         d += timedelta(days=1)
     return result
+
+
+def find_incomplete_days(conn, start: str, end: str, min_ratio: float = 0.7) -> list:
+    """
+    윈도우 내에서 '데이터는 있지만 일부 종목만 저장된' 불완전한 날짜를 찾아냄.
+    (네트워크 순간 오류 등으로 일부 종목만 저장된 경우, 기존 로직은 이런 날짜를
+     "이미 수집됨"으로 착각해서 다시 안 건드렸음 → 이 함수가 그 빈틈을 잡아냄)
+    """
+    rows = conn.execute("""
+        SELECT bas_dd, COUNT(DISTINCT isu_cd) FROM etf_daily
+        WHERE bas_dd BETWEEN ? AND ?
+        GROUP BY bas_dd
+    """, (start, end)).fetchall()
+    if not rows:
+        return []
+    baseline = max(cnt for _, cnt in rows)  # 가장 잘 채워진 날짜의 종목 수를 정상 기준으로 삼음
+    threshold = baseline * min_ratio
+    return [dd for dd, cnt in rows if cnt < threshold]
 
 
 def prune_old_data(conn: sqlite3.Connection, window_days: int):
@@ -178,8 +196,15 @@ def main():
         conn.execute("DELETE FROM etf_daily WHERE bas_dd >= ?", (window_start,))
         conn.commit()
 
-    targets = business_days_missing(conn, window_start, today)
-    print(f"수집 대상: {len(targets)}개 영업일 (윈도우: 최근 {args.window_days}일, {window_start} ~ {today} 중 DB에 없는 날짜)")
+    missing_days = business_days_missing(conn, window_start, today)
+    incomplete_days = find_incomplete_days(conn, window_start, today)
+    # 완전 누락 + 불완전(일부만 저장된) 날짜를 합쳐서 수집 대상으로 삼음 (중복 제거, 날짜순 정렬)
+    targets = sorted(set(missing_days) | set(incomplete_days))
+
+    print(f"수집 대상: {len(targets)}개 영업일 (윈도우: 최근 {args.window_days}일, {window_start} ~ {today})")
+    print(f"  ├─ 완전히 없는 날짜: {len(missing_days)}개")
+    print(f"  └─ 일부만 저장된 불완전한 날짜: {len(incomplete_days)}개"
+          + (f" {sorted(incomplete_days)}" if incomplete_days else ""))
 
     ok, empty, fail = 0, 0, 0
     for i, dd in enumerate(targets, 1):
