@@ -753,24 +753,6 @@ else:
             mcol3.metric("추세", data["추세"])
             mcol4.metric("골드크로스 수익률", ret_str)
 
-        # ── 임시 디버그: 차트에 실제로 쓰이는 데이터의 날짜 공백 여부 확인 ──
-        _debug_close = data["_close"].iloc[-90:]
-        _gaps = []
-        for i in range(1, len(_debug_close)):
-            diff_days = (_debug_close.index[i] - _debug_close.index[i-1]).days
-            if diff_days > 4:  # 주말(2~3일)은 정상, 그 이상이면 진짜 공백
-                _gaps.append(
-                    f"{_debug_close.index[i-1].strftime('%Y-%m-%d')} → "
-                    f"{_debug_close.index[i].strftime('%Y-%m-%d')} ({diff_days}일 차이)"
-                )
-        if _gaps:
-            st.warning(f"🔧 디버그: 차트 데이터에 공백 {len(_gaps)}건 발견 — {_gaps}")
-        else:
-            st.caption(
-                f"🔧 디버그: 차트 데이터 정상 (총 {len(_debug_close)}개, "
-                f"{_debug_close.index[0].strftime('%Y-%m-%d')} ~ {_debug_close.index[-1].strftime('%Y-%m-%d')})"
-            )
-
         fig = make_chart(name, code, data, buy_price=buy_price)
         st.pyplot(fig)
         plt.close(fig)
