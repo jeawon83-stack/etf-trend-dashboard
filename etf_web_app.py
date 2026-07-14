@@ -349,6 +349,51 @@ def calc_signals(df: pd.DataFrame) -> dict:
         "_gc_price": gc_price,
     }
 
+# ── UI 헬퍼: 배지(badge) & 반응형 지표 카드 ─────────────────────────
+def render_badge(text: str, fg: str, bg: str) -> str:
+    return (
+        f"<span style='background:{bg}; color:{fg}; padding:3px 11px; "
+        f"border-radius:12px; font-size:0.85rem; font-weight:600; "
+        f"white-space:nowrap; display:inline-block;'>{text}</span>"
+    )
+
+def signal_badge(signal_text: str) -> str:
+    """매매신호(매수/매도/보유 등)를 색깔 배지로"""
+    if "매수" in signal_text:
+        return render_badge(f"🟢 {signal_text}", "#0a7d2c", "#e3f7e8")
+    elif "매도" in signal_text:
+        return render_badge(f"🔵 {signal_text}", "#0b5fc7", "#e5f0fd")
+    else:
+        return render_badge(signal_text, "#555555", "#ececec")
+
+def stop_loss_badge(is_danger: bool) -> str:
+    """손절 필요 여부를 색깔 배지로"""
+    if is_danger:
+        return render_badge("🚨 손절 필요", "#b3261e", "#fbe4e2")
+    return render_badge("✅ 정상", "#0a7d2c", "#e3f7e8")
+
+def metric_card(label: str, value: str, sub: str = None, sub_color: str = None) -> str:
+    """지표 카드 한 칸의 HTML (st.metric 대체, 폭에 맞춰 자동 줄바꿈)"""
+    sub_html = ""
+    if sub:
+        color = sub_color or "inherit"
+        sub_html = f"<div style='font-size:0.72rem; color:{color}; margin-top:2px;'>{sub}</div>"
+    return (
+        "<div style='background:rgba(120,120,120,0.06); border-radius:8px; "
+        "padding:9px 12px; min-width:0;'>"
+        f"<div style='font-size:0.75rem; opacity:0.65; white-space:nowrap;'>{label}</div>"
+        f"<div style='font-size:1.05rem; font-weight:700; word-break:break-word; margin-top:2px;'>{value}</div>"
+        f"{sub_html}</div>"
+    )
+
+def metric_grid(cards: list) -> str:
+    """카드 리스트를 화면 폭에 따라 자동으로 열 개수가 조절되는 그리드로 묶음"""
+    cards_html = "".join(cards)
+    return (
+        "<div style='display:grid; grid-template-columns:repeat(auto-fit, minmax(115px, 1fr)); "
+        f"gap:8px; margin:8px 0 16px 0;'>{cards_html}</div>"
+    )
+
 # ── 차트 생성 ────────────────────────────────────────────────────
 def make_chart(name: str, code: str, data: dict, buy_price: float = None):
     fig, ax = plt.subplots(figsize=(14, 5))
@@ -536,6 +581,30 @@ st.markdown(
     unsafe_allow_html=True
 )
 
+# ── 지표 카드(metric) 글자 크기 조정: 좁은 화면에서 잘리지 않도록 ──
+st.markdown("""
+<style>
+    div[data-testid="stMetric"] {
+        background-color: rgba(120, 120, 120, 0.06);
+        border-radius: 8px;
+        padding: 8px 10px;
+    }
+    div[data-testid="stMetricValue"] {
+        font-size: 1.15rem !important;
+        white-space: normal !important;
+        overflow-wrap: break-word !important;
+        line-height: 1.25 !important;
+    }
+    div[data-testid="stMetricLabel"] {
+        font-size: 0.78rem !important;
+        opacity: 0.75;
+    }
+    div[data-testid="stMetricDelta"] {
+        font-size: 0.78rem !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 # 세션 상태 초기화
 if "holdings" not in st.session_state:
     st.session_state.holdings = load_holdings()
@@ -590,6 +659,20 @@ with top_left:
             reverse=True
         )[:10]
 
+        # 표 헤더
+        st.markdown(
+            "<div style='display:flex; font-size:0.78rem; opacity:0.6; "
+            "padding:2px 6px; margin-bottom:2px;'>"
+            "<div style='width:32px;'>#</div>"
+            "<div style='flex:2;'>종목명</div>"
+            "<div style='flex:1; text-align:right;'>현재가</div>"
+            "<div style='flex:1; text-align:right;'>경사</div>"
+            "<div style='flex:1; text-align:right;'>예상수익률</div>"
+            "<div style='width:56px;'></div>"
+            "</div>",
+            unsafe_allow_html=True
+        )
+
         # 고정 높이 컨테이너 (약 5개 표시, 나머지 스크롤)
         with st.container(height=300):
             for rank, (code, info) in enumerate(sorted_golden, 1):
@@ -599,13 +682,28 @@ with top_left:
                 slope = data["추세경사"]
                 ret_str = f"{ret:+.2f}%" if ret is not None else "-"
 
-                btn_label = (
-                    f"#{rank} 🟡 {name}  |  {data['현재가']:,.0f}원  |  "
-                    f"경사 {slope:+.2f}%  |  예상수익률 {ret_str}  |  {data['추세']}"
-                )
-                if st.button(btn_label, key=f"rec_{code}", use_container_width=True):
-                    st.session_state.selected_code = code
-                    st.session_state.selected_name = name
+                row_c1, row_c2, row_c3 = st.columns([5.2, 2.6, 0.9])
+                with row_c1:
+                    st.markdown(
+                        f"<div style='padding-top:6px;'>"
+                        f"<b>#{rank}</b> 🟡 {name}"
+                        f"<div style='font-size:0.75rem; opacity:0.65;'>{data['추세']}</div>"
+                        f"</div>",
+                        unsafe_allow_html=True
+                    )
+                with row_c2:
+                    st.markdown(
+                        f"<div style='padding-top:6px; text-align:right; font-size:0.85rem;'>"
+                        f"{data['현재가']:,.0f}원<br>"
+                        f"<span style='opacity:0.65;'>경사 {slope:+.2f}% · {ret_str}</span>"
+                        f"</div>",
+                        unsafe_allow_html=True
+                    )
+                with row_c3:
+                    if st.button("📊", key=f"rec_{code}", help="차트 보기", use_container_width=True):
+                        st.session_state.selected_code = code
+                        st.session_state.selected_name = name
+                st.markdown("<hr style='margin:4px 0; opacity:0.15;'>", unsafe_allow_html=True)
 
         if st.button("🤖 AI 시장 브리핑 보기", key="ai_summary_btn", use_container_width=True):
             with st.spinner("AI가 오늘의 추천 종목을 분석하고 있어요..."):
@@ -678,29 +776,37 @@ with top_right:
                     df   = fetch_data(code)
                     data = calc_signals(df)
 
-                    row_col1, row_col2 = st.columns([5, 1])
+                    row_col1, row_col2, row_col3 = st.columns([4.4, 0.8, 0.8])
                     with row_col1:
                         if data is None:
-                            if st.button(f"⚠️ {name} (데이터 부족)", key=f"hold_{code}", use_container_width=True):
-                                st.session_state.selected_code = code
-                                st.session_state.selected_name = name
-                                st.rerun()  # 차트 영역(fragment 바깥)을 갱신하려면 전체 새로고침 필요
+                            st.markdown(
+                                f"<div style='padding-top:6px;'>⚠️ {name} "
+                                f"<span style='opacity:0.6; font-size:0.8rem;'>(데이터 부족)</span></div>",
+                                unsafe_allow_html=True
+                            )
                         else:
                             cur_price  = data["현재가"]
                             profit_pct = (cur_price - buy_price) / buy_price * 100
-                            signal_icon = data["신호"]
-                            profit_icon = "🔺" if profit_pct >= 0 else "🔻"
-                            stop_loss   = "  |  🚨 손절" if profit_pct <= -5.0 else ""
+                            is_danger  = profit_pct <= -5.0
+                            profit_color = "#c0392b" if profit_pct < 0 else "#0a7d2c"
+                            profit_icon  = "🔺" if profit_pct >= 0 else "🔻"
 
-                            btn_label = (
-                                f"{name}  |  현재 {cur_price:,.0f}원  |  "
-                                f"수익률 {profit_icon}{profit_pct:+.2f}%  |  {signal_icon}{stop_loss}"
+                            st.markdown(
+                                f"<div style='padding-top:4px;'><b>{name}</b>  "
+                                f"{signal_badge(data['신호'])}"
+                                f"{'  ' + render_badge('🚨 손절', '#b3261e', '#fbe4e2') if is_danger else ''}"
+                                f"<div style='font-size:0.85rem; margin-top:2px;'>"
+                                f"현재 {cur_price:,.0f}원 &nbsp;·&nbsp; "
+                                f"<span style='color:{profit_color};'>{profit_icon} {profit_pct:+.2f}%</span>"
+                                f"</div></div>",
+                                unsafe_allow_html=True
                             )
-                            if st.button(btn_label, key=f"hold_{code}", use_container_width=True):
-                                st.session_state.selected_code = code
-                                st.session_state.selected_name = name
-                                st.rerun()  # 차트 영역(fragment 바깥)을 갱신하려면 전체 새로고침 필요
                     with row_col2:
+                        if st.button("📊", key=f"hold_{code}", help="차트 보기", use_container_width=True):
+                            st.session_state.selected_code = code
+                            st.session_state.selected_name = name
+                            st.rerun()  # 차트 영역(fragment 바깥)을 갱신하려면 전체 새로고침 필요
+                    with row_col3:
                         if st.button("🗑️", key=f"del_hold_{code}"):
                             del st.session_state.holdings[code]
                             save_holdings(st.session_state.holdings)
@@ -735,23 +841,30 @@ else:
 
         if buy_price is not None:
             my_profit        = (data["현재가"] - buy_price) / buy_price * 100
-            stop_loss_signal = "🚨 손절 필요" if my_profit <= -5.0 else "✅ 정상"
+            is_danger         = my_profit <= -5.0
+            profit_color      = "#c0392b" if my_profit < 0 else "#0a7d2c"
+            delta_color       = "#c0392b" if data["전일대비"] < 0 else "#0a7d2c"
 
-            mcol1, mcol2, mcol3, mcol4, mcol5, mcol6 = st.columns(6)
-            mcol1.metric("현재가", f"{data['현재가']:,.0f}원",
-                         f"{data['전일대비']:+,.0f} ({data['전일대비율']:+.2f}%)")
-            mcol2.metric("내 매수가", f"{buy_price:,.0f}원")
-            mcol3.metric("내 수익률", f"{my_profit:+.2f}%")
-            mcol4.metric("손절기준(-5%)", f"{buy_price * 0.95:,.0f}원")
-            mcol5.metric("손절 여부", stop_loss_signal)
-            mcol6.metric("매매신호", data["신호"])
+            cards = [
+                metric_card("현재가", f"{data['현재가']:,.0f}원",
+                            f"{data['전일대비']:+,.0f} ({data['전일대비율']:+.2f}%)", delta_color),
+                metric_card("내 매수가", f"{buy_price:,.0f}원"),
+                metric_card("내 수익률", f"{my_profit:+.2f}%", sub_color=profit_color),
+                metric_card("손절기준(-5%)", f"{buy_price * 0.95:,.0f}원"),
+                metric_card("손절 여부", stop_loss_badge(is_danger)),
+                metric_card("매매신호", signal_badge(data["신호"])),
+            ]
+            st.markdown(metric_grid(cards), unsafe_allow_html=True)
         else:
-            mcol1, mcol2, mcol3, mcol4 = st.columns(4)
-            mcol1.metric("현재가", f"{data['현재가']:,.0f}원",
-                         f"{data['전일대비']:+,.0f} ({data['전일대비율']:+.2f}%)")
-            mcol2.metric("신호", data["신호"])
-            mcol3.metric("추세", data["추세"])
-            mcol4.metric("골드크로스 수익률", ret_str)
+            delta_color = "#c0392b" if data["전일대비"] < 0 else "#0a7d2c"
+            cards = [
+                metric_card("현재가", f"{data['현재가']:,.0f}원",
+                            f"{data['전일대비']:+,.0f} ({data['전일대비율']:+.2f}%)", delta_color),
+                metric_card("신호", signal_badge(data["신호"])),
+                metric_card("추세", data["추세"]),
+                metric_card("골드크로스 수익률", ret_str),
+            ]
+            st.markdown(metric_grid(cards), unsafe_allow_html=True)
 
         fig = make_chart(name, code, data, buy_price=buy_price)
         st.pyplot(fig)
