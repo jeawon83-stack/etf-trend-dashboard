@@ -231,7 +231,7 @@ def fetch_data(ticker_code: str) -> pd.DataFrame:
         rows = conn.execute("""
             SELECT bas_dd, cls_prc, opn_prc, hgh_prc, low_prc, trd_vol, fluc_rt
             FROM etf_daily
-            WHERE isu_cd = ?
+            WHERE isu_cd = ? AND cls_prc IS NOT NULL
             ORDER BY bas_dd ASC
         """, (ticker_code,)).fetchall()
         if not rows:
@@ -546,16 +546,6 @@ if "selected_name" not in st.session_state:
 
 if get_db_conn() is None:
     st.warning("⚠️ etf_data.db 파일을 찾을 수 없어요. `python krx_data_collector.py` 를 먼저 실행해서 데이터를 수집해주세요. (수집 전까지는 내장 목록으로 임시 동작합니다)")
-else:
-    # ── 임시 디버그: 배포 환경이 실제로 어떤 DB를 보고 있는지 확인용 ──
-    _dbg_conn = get_db_conn()
-    _dbg_size = os.path.getsize(DB_FILE) / (1024 * 1024)
-    _dbg_total = _dbg_conn.execute("SELECT COUNT(*) FROM etf_daily").fetchone()[0]
-    _dbg_102110 = _dbg_conn.execute(
-        "SELECT COUNT(*) FROM etf_daily WHERE isu_cd = '102110' AND bas_dd BETWEEN '20260420' AND '20260610'"
-    ).fetchone()[0]
-    _dbg_conn.close()
-    st.caption(f"🔧 디버그: DB 파일 {_dbg_size:.1f}MB | 전체 레코드 {_dbg_total:,}건 | TIGER200(102110) 4/20~6/10 데이터 {_dbg_102110}개")
 
 # 새로고침 버튼 (타이틀 바로 아래)
 col_refresh, _ = st.columns([1, 5])
