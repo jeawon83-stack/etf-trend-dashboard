@@ -153,16 +153,23 @@ COMMON_ETFS = {
     "144600": "KODEX 은선물(H)",
 }
 
-# ── 인버스/레버리지(곱버스) 자동 제외 키워드 ───────────────────────
-# 이름에 아래 키워드가 포함되면 추천·검색 대상에서 항상 제외합니다.
-EXCLUDE_KEYWORDS = ["인버스", "레버리지", "2X", "선물인버스", "곱버스"]
+# ── 레버리지(항상 제외) / 인버스(토글로 제어) 키워드 분리 ───────────────
+# 레버리지·2배(곱버스)는 위험도가 높아 토글과 무관하게 항상 제외합니다.
+# 1배 인버스는 하락장 대응용으로 토글을 켜면 포함할 수 있습니다.
+LEVERAGE_KEYWORDS = ["레버리지", "2X", "곱버스"]
+INVERSE_KEYWORDS  = ["인버스"]  # "선물인버스" 등도 이 substring으로 함께 걸러짐
 
-def is_excluded(name: str) -> bool:
-    return any(kw in name for kw in EXCLUDE_KEYWORDS)
+def is_excluded(name: str, include_inverse: bool = False) -> bool:
+    if any(kw in name for kw in LEVERAGE_KEYWORDS):
+        return True  # 레버리지/2배는 토글과 무관하게 항상 제외
+    if not include_inverse and any(kw in name for kw in INVERSE_KEYWORDS):
+        return True
+    return False
 
-# 내장 목록 자체에서도 제외 키워드에 해당하는 항목은 미리 제거 (이중 안전장치)
-# ※ KRX API 조회가 실패할 때를 대비한 "폴백(fallback)" 목록으로만 사용됩니다.
-COMMON_ETFS = {code: name for code, name in COMMON_ETFS.items() if not is_excluded(name)}
+# 내장 목록 자체에서도 레버리지는 미리 제거 (이중 안전장치, 폴백용 목록이라 인버스는 유지)
+# ※ KRX API/DB 조회가 실패할 때를 대비한 "폴백(fallback)" 목록으로만 사용됩니다.
+COMMON_ETFS = {code: name for code, name in COMMON_ETFS.items()
+               if not any(kw in name for kw in LEVERAGE_KEYWORDS)}
 
 # ── KRX 데이터 DB (수집기가 미리 채워둔 데이터를 읽기만 함) ──────────────
 # krx_data_collector.py 를 주기적으로 실행하면 이 DB(etf_data.db)가 자동으로
@@ -210,11 +217,12 @@ def get_etf_universe_status():
     return "내장 목록(폴백)", None, "etf_data.db 파일이 없습니다. krx_data_collector.py를 먼저 실행해주세요."
 
 def search_etf(keyword: str) -> dict:
-    """ETF 유니버스(DB 또는 폴백)에서 검색 (인버스/레버리지는 결과에서 항상 제외)"""
+    """ETF 유니버스(DB 또는 폴백)에서 검색 (레버리지는 항상 제외, 인버스는 토글에 따름)"""
     results = {}
+    include_inverse = st.session_state.get("include_inverse", False)
     keyword_lower = keyword.lower().replace(" ", "")
     for code, name in get_etf_universe().items():
-        if is_excluded(name):
+        if is_excluded(name, include_inverse=include_inverse):
             continue
         if keyword_lower in name.lower().replace(" ", ""):
             results[f"{name} ({code})"] = (name, code)
@@ -561,10 +569,11 @@ def build_summary_prompt(sorted_golden: list) -> str:
 
 
 def scan_all_etfs() -> dict:
-    """ETF 유니버스(KRX API 또는 폴백) 전체를 스캔해서 신호 결과 딕셔너리로 반환 (인버스/레버리지 계열은 항상 제외)"""
+    """ETF 유니버스(DB 또는 폴백) 전체를 스캔해서 신호 결과 딕셔너리로 반환 (레버리지는 항상 제외, 인버스는 토글에 따름)"""
     results = {}
+    include_inverse = st.session_state.get("include_inverse", False)
     for code, name in get_etf_universe().items():
-        if is_excluded(name):
+        if is_excluded(name, include_inverse=include_inverse):
             continue
         df   = fetch_data(code)
         data = calc_signals(df)
@@ -615,16 +624,24 @@ if "selected_code" not in st.session_state:
     st.session_state.selected_code = None
 if "selected_name" not in st.session_state:
     st.session_state.selected_name = None
+if "include_inverse" not in st.session_state:
+    st.session_state.include_inverse = False  # 기본값: 인버스 제외 (하락장 대응용, 필요시 토글로 켬)
 
 if get_db_conn() is None:
     st.warning("⚠️ etf_data.db 파일을 찾을 수 없어요. `python krx_data_collector.py` 를 먼저 실행해서 데이터를 수집해주세요. (수집 전까지는 내장 목록으로 임시 동작합니다)")
 
-# 새로고침 버튼 (타이틀 바로 아래)
-col_refresh, _ = st.columns([1, 5])
+# 새로고침 버튼 + 인버스 포함 토글 (타이틀 바로 아래)
+col_refresh, col_inverse, _ = st.columns([1, 2, 3])
 with col_refresh:
     if st.button("🔄 새로고침", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
+with col_inverse:
+    st.session_state.include_inverse = st.toggle(
+        "🔻 인버스(1배) 포함 — 하락장 대응",
+        value=st.session_state.include_inverse,
+        help="레버리지·2배 상품은 이 토글과 무관하게 항상 제외됩니다. 켜면 1배 인버스 ETF도 추천/검색 대상에 포함됩니다."
+    )
 
 st.divider()
 
@@ -637,10 +654,13 @@ top_left, top_right = st.columns(2)
 with top_left:
     st.markdown("#### 🟡 추세추종 추천 TOP 10")
     _universe = get_etf_universe()
+    _include_inverse = st.session_state.get("include_inverse", False)
+    _scan_universe = {c: n for c, n in _universe.items() if not is_excluded(n, include_inverse=_include_inverse)}
     _source_label, _bas_dd, _error = get_etf_universe_status()
-    _caption = f"국내 ETF {len(_universe)}개 ({_source_label}"
+    _inverse_note = " (인버스 포함)" if _include_inverse else ""
+    _caption = f"국내 ETF {len(_scan_universe)}개 ({_source_label}"
     _caption += f", 기준일 {_bas_dd})" if _bas_dd else ")"
-    _caption += " 중 정배열(5>20>120) + 급경사 상위 10개"
+    _caption += f"{_inverse_note} 중 정배열(5>20>120) + 급경사 상위 10개"
     st.caption(_caption)
     if _error:
         st.caption(f"⚠️ KRX API 사용 불가 — {_error}")

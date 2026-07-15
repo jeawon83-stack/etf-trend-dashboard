@@ -43,11 +43,13 @@ DEFAULT_WINDOW_DAYS = 500   # 롤링 윈도우 기본 크기 (달력일 기준, 
 KST = ZoneInfo("Asia/Seoul")  # GitHub Actions 서버(UTC)에서 돌려도 한국시간 기준으로 동작
 
 # etf_web_app.py 와 동일한 인버스/레버리지 제외 키워드
-EXCLUDE_KEYWORDS = ["인버스", "레버리지", "2X", "선물인버스", "곱버스"]
+# ★ 레버리지/2배(곱버스) 상품은 위험도가 높아 수집 단계에서 아예 제외.
+#   1배 인버스는 DB엔 저장해두고, 앱(etf_web_app.py)에서 토글로 포함 여부를 결정함.
+LEVERAGE_KEYWORDS = ["레버리지", "2X", "곱버스"]
 
 
 def is_excluded(name: str) -> bool:
-    return any(kw in name for kw in EXCLUDE_KEYWORDS)
+    return any(kw in name for kw in LEVERAGE_KEYWORDS)
 
 
 def get_auth_key() -> str:
