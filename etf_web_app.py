@@ -309,9 +309,11 @@ def calc_signals(df: pd.DataFrame) -> dict:
         gc_price  = close.iloc[gc_idx]
         ret_pct   = (last_price - gc_price) / gc_price * 100
         days_held = (close.index[-1] - gc_date).days
+        gc_trading_days_ago = (len(close) - 1) - gc_idx  # 영업일 기준 경과일 (0 = 오늘 크로스)
     else:
         gc_price = ret_pct = days_held = None
         gc_date  = None
+        gc_trading_days_ago = None
 
     # ── 추세 경사(기울기) 계산 ──────────────────────────────────
     # MA20의 최근 5거래일 변화율(%)로 "추세가 얼마나 급한지"를 측정
@@ -340,6 +342,7 @@ def calc_signals(df: pd.DataFrame) -> dict:
         "매수가":         gc_price,
         "기대수익률":     ret_pct,
         "보유일수":       days_held,
+        "골드크로스경과영업일": gc_trading_days_ago,
         "추세경사":       slope_pct,
         "_close":  close,
         "_ma5":    ma5,
@@ -650,8 +653,27 @@ with top_left:
         if info["data"]["매수신호"]
     }
 
+    # ── 필터: 최근 N영업일 이내 골드크로스만 보기 ──────────────────
+    filter_c1, filter_c2 = st.columns([1.3, 2])
+    with filter_c1:
+        filter_recent_gc = st.checkbox("최근 골드크로스만", value=False,
+                                        help="골드크로스(MA5가 MA20을 상향 돌파)가 발생한 지 얼마 안 된 종목만 보여줍니다")
+    with filter_c2:
+        recent_days = st.slider("영업일 이내", min_value=1, max_value=20, value=5,
+                                 disabled=not filter_recent_gc, label_visibility="collapsed" if filter_recent_gc else "visible")
+
+    if filter_recent_gc:
+        golden_list = {
+            code: info for code, info in golden_list.items()
+            if info["data"]["골드크로스경과영업일"] is not None
+            and info["data"]["골드크로스경과영업일"] <= recent_days
+        }
+
     if not golden_list:
-        st.info("현재 매수신호(정배열) 상태인 ETF가 없습니다.")
+        msg = "현재 매수신호(정배열) 상태인 ETF가 없습니다."
+        if filter_recent_gc:
+            msg = f"최근 {recent_days}영업일 이내 골드크로스가 발생한 매수신호 ETF가 없습니다."
+        st.info(msg)
     else:
         sorted_golden = sorted(
             golden_list.items(),
@@ -684,10 +706,12 @@ with top_left:
 
                 row_c1, row_c2, row_c3 = st.columns([5.2, 2.6, 0.9])
                 with row_c1:
+                    gc_ago = data["골드크로스경과영업일"]
+                    gc_ago_str = f" · 크로스 {gc_ago}영업일 전" if gc_ago is not None else ""
                     st.markdown(
                         f"<div style='padding-top:6px;'>"
                         f"<b>#{rank}</b> 🟡 {name}"
-                        f"<div style='font-size:0.75rem; opacity:0.65;'>{data['추세']}</div>"
+                        f"<div style='font-size:0.75rem; opacity:0.65;'>{data['추세']}{gc_ago_str}</div>"
                         f"</div>",
                         unsafe_allow_html=True
                     )
