@@ -369,11 +369,11 @@ def render_badge(text: str, fg: str, bg: str) -> str:
     )
 
 def signal_badge(signal_text: str) -> str:
-    """매매신호(매수/매도/보유 등)를 색깔 배지로"""
+    """매매신호(매수/매도/보유 등)를 색깔 배지로 (텍스트에 이미 아이콘이 포함돼 있으므로 추가하지 않음)"""
     if "매수" in signal_text:
-        return render_badge(f"🟢 {signal_text}", "#0a7d2c", "#e3f7e8")
+        return render_badge(signal_text, "#0a7d2c", "#e3f7e8")
     elif "매도" in signal_text:
-        return render_badge(f"🔵 {signal_text}", "#0b5fc7", "#e5f0fd")
+        return render_badge(signal_text, "#0b5fc7", "#e5f0fd")
     else:
         return render_badge(signal_text, "#555555", "#ececec")
 
