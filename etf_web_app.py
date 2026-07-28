@@ -153,23 +153,16 @@ COMMON_ETFS = {
     "144600": "KODEX 은선물(H)",
 }
 
-# ── 레버리지(항상 제외) / 인버스(토글로 제어) 키워드 분리 ───────────────
-# 레버리지·2배(곱버스)는 위험도가 높아 토글과 무관하게 항상 제외합니다.
-# 1배 인버스는 하락장 대응용으로 토글을 켜면 포함할 수 있습니다.
-LEVERAGE_KEYWORDS = ["레버리지", "2X", "곱버스"]
-INVERSE_KEYWORDS  = ["인버스"]  # "선물인버스" 등도 이 substring으로 함께 걸러짐
+# ── 인버스/레버리지(곱버스) 자동 제외 키워드 ───────────────────────
+# 이름에 아래 키워드가 포함되면 추천·검색 대상에서 항상 제외합니다.
+EXCLUDE_KEYWORDS = ["인버스", "레버리지", "2X", "선물인버스", "곱버스"]
 
-def is_excluded(name: str, include_inverse: bool = False) -> bool:
-    if any(kw in name for kw in LEVERAGE_KEYWORDS):
-        return True  # 레버리지/2배는 토글과 무관하게 항상 제외
-    if not include_inverse and any(kw in name for kw in INVERSE_KEYWORDS):
-        return True
-    return False
+def is_excluded(name: str) -> bool:
+    return any(kw in name for kw in EXCLUDE_KEYWORDS)
 
-# 내장 목록 자체에서도 레버리지는 미리 제거 (이중 안전장치, 폴백용 목록이라 인버스는 유지)
-# ※ KRX API/DB 조회가 실패할 때를 대비한 "폴백(fallback)" 목록으로만 사용됩니다.
-COMMON_ETFS = {code: name for code, name in COMMON_ETFS.items()
-               if not any(kw in name for kw in LEVERAGE_KEYWORDS)}
+# 내장 목록 자체에서도 제외 키워드에 해당하는 항목은 미리 제거 (이중 안전장치)
+# ※ KRX API 조회가 실패할 때를 대비한 "폴백(fallback)" 목록으로만 사용됩니다.
+COMMON_ETFS = {code: name for code, name in COMMON_ETFS.items() if not is_excluded(name)}
 
 # ── KRX 데이터 DB (수집기가 미리 채워둔 데이터를 읽기만 함) ──────────────
 # krx_data_collector.py 를 주기적으로 실행하면 이 DB(etf_data.db)가 자동으로
@@ -217,12 +210,11 @@ def get_etf_universe_status():
     return "내장 목록(폴백)", None, "etf_data.db 파일이 없습니다. krx_data_collector.py를 먼저 실행해주세요."
 
 def search_etf(keyword: str) -> dict:
-    """ETF 유니버스(DB 또는 폴백)에서 검색 (레버리지는 항상 제외, 인버스는 토글에 따름)"""
+    """ETF 유니버스(DB 또는 폴백)에서 검색 (인버스/레버리지는 결과에서 항상 제외)"""
     results = {}
-    include_inverse = st.session_state.get("include_inverse", False)
     keyword_lower = keyword.lower().replace(" ", "")
     for code, name in get_etf_universe().items():
-        if is_excluded(name, include_inverse=include_inverse):
+        if is_excluded(name):
             continue
         if keyword_lower in name.lower().replace(" ", ""):
             results[f"{name} ({code})"] = (name, code)
@@ -239,7 +231,7 @@ def fetch_data(ticker_code: str) -> pd.DataFrame:
         rows = conn.execute("""
             SELECT bas_dd, cls_prc, opn_prc, hgh_prc, low_prc, trd_vol, fluc_rt
             FROM etf_daily
-            WHERE isu_cd = ? AND cls_prc IS NOT NULL
+            WHERE isu_cd = ?
             ORDER BY bas_dd ASC
         """, (ticker_code,)).fetchall()
         if not rows:
@@ -317,11 +309,9 @@ def calc_signals(df: pd.DataFrame) -> dict:
         gc_price  = close.iloc[gc_idx]
         ret_pct   = (last_price - gc_price) / gc_price * 100
         days_held = (close.index[-1] - gc_date).days
-        gc_trading_days_ago = (len(close) - 1) - gc_idx  # 영업일 기준 경과일 (0 = 오늘 크로스)
     else:
         gc_price = ret_pct = days_held = None
         gc_date  = None
-        gc_trading_days_ago = None
 
     # ── 추세 경사(기울기) 계산 ──────────────────────────────────
     # MA20의 최근 5거래일 변화율(%)로 "추세가 얼마나 급한지"를 측정
@@ -332,6 +322,16 @@ def calc_signals(df: pd.DataFrame) -> dict:
         slope_pct = (ma20_now - ma20_prev) / ma20_prev * 100
     else:
         slope_pct = 0.0
+
+    # ── 20일 신고가 돌파 (터틀 트레이딩 진입 타이밍) ──────────────────
+    # 오늘을 제외한 직전 20거래일 중 최고가를 오늘 종가가 넘었는지 확인
+    # (정배열 필터를 통과한 종목 중 "지금이 진입 적기인지"를 보여주는 보조 신호)
+    high20 = df["고가"].rolling(20).max().shift(1)
+    last_high20 = high20.iloc[-1]
+    if pd.isna(last_high20):
+        is_20d_breakout = False
+    else:
+        is_20d_breakout = last_price > last_high20
 
     return {
         "현재가":         last_price,
@@ -350,8 +350,10 @@ def calc_signals(df: pd.DataFrame) -> dict:
         "매수가":         gc_price,
         "기대수익률":     ret_pct,
         "보유일수":       days_held,
-        "골드크로스경과영업일": gc_trading_days_ago,
         "추세경사":       slope_pct,
+        "20일고점":       last_high20,
+        "20일신고가돌파": is_20d_breakout,
+        "복합매수신호":   is_buy_signal and is_20d_breakout,
         "_close":  close,
         "_ma5":    ma5,
         "_ma20":   ma20,
@@ -359,51 +361,6 @@ def calc_signals(df: pd.DataFrame) -> dict:
         "_gc_date":  gc_date,
         "_gc_price": gc_price,
     }
-
-# ── UI 헬퍼: 배지(badge) & 반응형 지표 카드 ─────────────────────────
-def render_badge(text: str, fg: str, bg: str) -> str:
-    return (
-        f"<span style='background:{bg}; color:{fg}; padding:3px 11px; "
-        f"border-radius:12px; font-size:0.85rem; font-weight:600; "
-        f"white-space:nowrap; display:inline-block;'>{text}</span>"
-    )
-
-def signal_badge(signal_text: str) -> str:
-    """매매신호(매수/매도/보유 등)를 색깔 배지로 (텍스트에 이미 아이콘이 포함돼 있으므로 추가하지 않음)"""
-    if "매수" in signal_text:
-        return render_badge(signal_text, "#0a7d2c", "#e3f7e8")
-    elif "매도" in signal_text:
-        return render_badge(signal_text, "#0b5fc7", "#e5f0fd")
-    else:
-        return render_badge(signal_text, "#555555", "#ececec")
-
-def stop_loss_badge(is_danger: bool) -> str:
-    """손절 필요 여부를 색깔 배지로"""
-    if is_danger:
-        return render_badge("🚨 손절 필요", "#b3261e", "#fbe4e2")
-    return render_badge("✅ 정상", "#0a7d2c", "#e3f7e8")
-
-def metric_card(label: str, value: str, sub: str = None, sub_color: str = None) -> str:
-    """지표 카드 한 칸의 HTML (st.metric 대체, 폭에 맞춰 자동 줄바꿈)"""
-    sub_html = ""
-    if sub:
-        color = sub_color or "inherit"
-        sub_html = f"<div style='font-size:0.72rem; color:{color}; margin-top:2px;'>{sub}</div>"
-    return (
-        "<div style='background:rgba(120,120,120,0.06); border-radius:8px; "
-        "padding:9px 12px; min-width:0;'>"
-        f"<div style='font-size:0.75rem; opacity:0.65; white-space:nowrap;'>{label}</div>"
-        f"<div style='font-size:1.05rem; font-weight:700; word-break:break-word; margin-top:2px;'>{value}</div>"
-        f"{sub_html}</div>"
-    )
-
-def metric_grid(cards: list) -> str:
-    """카드 리스트를 화면 폭에 따라 자동으로 열 개수가 조절되는 그리드로 묶음"""
-    cards_html = "".join(cards)
-    return (
-        "<div style='display:grid; grid-template-columns:repeat(auto-fit, minmax(115px, 1fr)); "
-        f"gap:8px; margin:8px 0 16px 0;'>{cards_html}</div>"
-    )
 
 # ── 차트 생성 ────────────────────────────────────────────────────
 def make_chart(name: str, code: str, data: dict, buy_price: float = None):
@@ -569,11 +526,10 @@ def build_summary_prompt(sorted_golden: list) -> str:
 
 
 def scan_all_etfs() -> dict:
-    """ETF 유니버스(DB 또는 폴백) 전체를 스캔해서 신호 결과 딕셔너리로 반환 (레버리지는 항상 제외, 인버스는 토글에 따름)"""
+    """ETF 유니버스(KRX API 또는 폴백) 전체를 스캔해서 신호 결과 딕셔너리로 반환 (인버스/레버리지 계열은 항상 제외)"""
     results = {}
-    include_inverse = st.session_state.get("include_inverse", False)
     for code, name in get_etf_universe().items():
-        if is_excluded(name, include_inverse=include_inverse):
+        if is_excluded(name):
             continue
         df   = fetch_data(code)
         data = calc_signals(df)
@@ -593,30 +549,6 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# ── 지표 카드(metric) 글자 크기 조정: 좁은 화면에서 잘리지 않도록 ──
-st.markdown("""
-<style>
-    div[data-testid="stMetric"] {
-        background-color: rgba(120, 120, 120, 0.06);
-        border-radius: 8px;
-        padding: 8px 10px;
-    }
-    div[data-testid="stMetricValue"] {
-        font-size: 1.15rem !important;
-        white-space: normal !important;
-        overflow-wrap: break-word !important;
-        line-height: 1.25 !important;
-    }
-    div[data-testid="stMetricLabel"] {
-        font-size: 0.78rem !important;
-        opacity: 0.75;
-    }
-    div[data-testid="stMetricDelta"] {
-        font-size: 0.78rem !important;
-    }
-</style>
-""", unsafe_allow_html=True)
-
 # 세션 상태 초기화
 if "holdings" not in st.session_state:
     st.session_state.holdings = load_holdings()
@@ -624,24 +556,16 @@ if "selected_code" not in st.session_state:
     st.session_state.selected_code = None
 if "selected_name" not in st.session_state:
     st.session_state.selected_name = None
-if "include_inverse" not in st.session_state:
-    st.session_state.include_inverse = False  # 기본값: 인버스 제외 (하락장 대응용, 필요시 토글로 켬)
 
 if get_db_conn() is None:
     st.warning("⚠️ etf_data.db 파일을 찾을 수 없어요. `python krx_data_collector.py` 를 먼저 실행해서 데이터를 수집해주세요. (수집 전까지는 내장 목록으로 임시 동작합니다)")
 
-# 새로고침 버튼 + 인버스 포함 토글 (타이틀 바로 아래)
-col_refresh, col_inverse, _ = st.columns([1, 2, 3])
+# 새로고침 버튼 (타이틀 바로 아래)
+col_refresh, _ = st.columns([1, 5])
 with col_refresh:
     if st.button("🔄 새로고침", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
-with col_inverse:
-    st.session_state.include_inverse = st.toggle(
-        "🔻 인버스(1배) 포함 — 하락장 대응",
-        value=st.session_state.include_inverse,
-        help="레버리지·2배 상품은 이 토글과 무관하게 항상 제외됩니다. 켜면 1배 인버스 ETF도 추천/검색 대상에 포함됩니다."
-    )
 
 st.divider()
 
@@ -654,13 +578,10 @@ top_left, top_right = st.columns(2)
 with top_left:
     st.markdown("#### 🟡 추세추종 추천 TOP 10")
     _universe = get_etf_universe()
-    _include_inverse = st.session_state.get("include_inverse", False)
-    _scan_universe = {c: n for c, n in _universe.items() if not is_excluded(n, include_inverse=_include_inverse)}
     _source_label, _bas_dd, _error = get_etf_universe_status()
-    _inverse_note = " (인버스 포함)" if _include_inverse else ""
-    _caption = f"국내 ETF {len(_scan_universe)}개 ({_source_label}"
+    _caption = f"국내 ETF {len(_universe)}개 ({_source_label}"
     _caption += f", 기준일 {_bas_dd})" if _bas_dd else ")"
-    _caption += f"{_inverse_note} 중 정배열(5>20>120) + 급경사 상위 10개"
+    _caption += " 중 정배열(5>20>120) + 급경사 상위 10개 (20일 신고가 돌파 시 가산점 🚀)"
     st.caption(_caption)
     if _error:
         st.caption(f"⚠️ KRX API 사용 불가 — {_error}")
@@ -673,47 +594,25 @@ with top_left:
         if info["data"]["매수신호"]
     }
 
-    # ── 필터: 최근 N영업일 이내 골드크로스만 보기 ──────────────────
-    filter_c1, filter_c2 = st.columns([1.3, 2])
-    with filter_c1:
-        filter_recent_gc = st.checkbox("최근 골드크로스만", value=False,
-                                        help="골드크로스(MA5가 MA20을 상향 돌파)가 발생한 지 얼마 안 된 종목만 보여줍니다")
-    with filter_c2:
-        recent_days = st.slider("영업일 이내", min_value=1, max_value=20, value=5,
-                                 disabled=not filter_recent_gc, label_visibility="collapsed" if filter_recent_gc else "visible")
-
-    if filter_recent_gc:
-        golden_list = {
-            code: info for code, info in golden_list.items()
-            if info["data"]["골드크로스경과영업일"] is not None
-            and info["data"]["골드크로스경과영업일"] <= recent_days
-        }
-
     if not golden_list:
-        msg = "현재 매수신호(정배열) 상태인 ETF가 없습니다."
-        if filter_recent_gc:
-            msg = f"최근 {recent_days}영업일 이내 골드크로스가 발생한 매수신호 ETF가 없습니다."
-        st.info(msg)
+        st.info("현재 매수신호(정배열) 상태인 ETF가 없습니다.")
     else:
+        # 정렬 점수 = 추세경사 + 20일 신고가 돌파 가산점(5점)
+        # → 경사가 비슷할 때, 지금 막 20일 신고가를 돌파한(터틀 트레이딩 진입 타이밍) 종목을 더 위로 올림
+        BREAKOUT_BONUS = 5.0
+
+        def _rank_score(item):
+            d = item[1]["data"]
+            score = d["추세경사"]
+            if d["20일신고가돌파"]:
+                score += BREAKOUT_BONUS
+            return score
+
         sorted_golden = sorted(
             golden_list.items(),
-            key=lambda x: x[1]["data"]["추세경사"],
+            key=_rank_score,
             reverse=True
         )[:10]
-
-        # 표 헤더
-        st.markdown(
-            "<div style='display:flex; font-size:0.78rem; opacity:0.6; "
-            "padding:2px 6px; margin-bottom:2px;'>"
-            "<div style='width:32px;'>#</div>"
-            "<div style='flex:2;'>종목명</div>"
-            "<div style='flex:1; text-align:right;'>현재가</div>"
-            "<div style='flex:1; text-align:right;'>경사</div>"
-            "<div style='flex:1; text-align:right;'>예상수익률</div>"
-            "<div style='width:56px;'></div>"
-            "</div>",
-            unsafe_allow_html=True
-        )
 
         # 고정 높이 컨테이너 (약 5개 표시, 나머지 스크롤)
         with st.container(height=300):
@@ -723,31 +622,15 @@ with top_left:
                 ret   = data["기대수익률"]
                 slope = data["추세경사"]
                 ret_str = f"{ret:+.2f}%" if ret is not None else "-"
+                breakout_badge = "  |  🚀20일신고가돌파" if data["20일신고가돌파"] else ""
 
-                row_c1, row_c2, row_c3 = st.columns([5.2, 2.6, 0.9])
-                with row_c1:
-                    gc_ago = data["골드크로스경과영업일"]
-                    gc_ago_str = f" · 크로스 {gc_ago}영업일 전" if gc_ago is not None else ""
-                    st.markdown(
-                        f"<div style='padding-top:6px;'>"
-                        f"<b>#{rank}</b> 🟡 {name}"
-                        f"<div style='font-size:0.75rem; opacity:0.65;'>{data['추세']}{gc_ago_str}</div>"
-                        f"</div>",
-                        unsafe_allow_html=True
-                    )
-                with row_c2:
-                    st.markdown(
-                        f"<div style='padding-top:6px; text-align:right; font-size:0.85rem;'>"
-                        f"{data['현재가']:,.0f}원<br>"
-                        f"<span style='opacity:0.65;'>경사 {slope:+.2f}% · {ret_str}</span>"
-                        f"</div>",
-                        unsafe_allow_html=True
-                    )
-                with row_c3:
-                    if st.button("📊", key=f"rec_{code}", help="차트 보기", use_container_width=True):
-                        st.session_state.selected_code = code
-                        st.session_state.selected_name = name
-                st.markdown("<hr style='margin:4px 0; opacity:0.15;'>", unsafe_allow_html=True)
+                btn_label = (
+                    f"#{rank} 🟡 {name}  |  {data['현재가']:,.0f}원  |  "
+                    f"경사 {slope:+.2f}%  |  예상수익률 {ret_str}  |  {data['추세']}{breakout_badge}"
+                )
+                if st.button(btn_label, key=f"rec_{code}", use_container_width=True):
+                    st.session_state.selected_code = code
+                    st.session_state.selected_name = name
 
         if st.button("🤖 AI 시장 브리핑 보기", key="ai_summary_btn", use_container_width=True):
             with st.spinner("AI가 오늘의 추천 종목을 분석하고 있어요..."):
@@ -763,100 +646,86 @@ with top_left:
 with top_right:
     st.markdown("#### 💼 내 보유 종목")
 
-    @st.fragment
-    def render_holdings_section():
-        # 종목 추가 폼 (접힘 상태로 기본 표시)
-        with st.expander("➕ 보유 종목 추가", expanded=len(st.session_state.holdings) == 0):
-            col1, col2 = st.columns(2)
-            with col1:
-                h_keyword = st.text_input("종목 검색", placeholder="예: TIGER 200", key="holding_search")
-            with col2:
-                h_code_direct = st.text_input("또는 종목코드 직접입력", placeholder="예: 102110", key="holding_code_direct")
+    # 종목 추가 폼 (접힘 상태로 기본 표시)
+    with st.expander("➕ 보유 종목 추가", expanded=len(st.session_state.holdings) == 0):
+        col1, col2 = st.columns(2)
+        with col1:
+            h_keyword = st.text_input("종목 검색", placeholder="예: TIGER 200", key="holding_search")
+        with col2:
+            h_code_direct = st.text_input("또는 종목코드 직접입력", placeholder="예: 102110", key="holding_code_direct")
 
-            chosen_code = None
-            chosen_name = None
+        chosen_code = None
+        chosen_name = None
 
-            if h_keyword:
-                sr = search_etf(h_keyword)
-                if sr:
-                    sel = st.selectbox("검색 결과 선택", list(sr.keys()), key="holding_select")
-                    chosen_name, chosen_code = sr[sel]
-                else:
-                    st.warning("검색 결과가 없습니다. 종목코드로 직접 입력해주세요.")
+        if h_keyword:
+            sr = search_etf(h_keyword)
+            if sr:
+                sel = st.selectbox("검색 결과 선택", list(sr.keys()), key="holding_select")
+                chosen_name, chosen_code = sr[sel]
+            else:
+                st.warning("검색 결과가 없습니다. 종목코드로 직접 입력해주세요.")
 
-            if h_code_direct.strip():
-                code = h_code_direct.strip().upper()
-                if len(code) >= 5 and len(code) <= 7 and code.isalnum():
-                    chosen_code = code
-                    chosen_name = get_etf_universe().get(code, f"종목_{code}")
-                else:
-                    st.error("종목코드는 5~7자리 숫자/영문 조합이어야 합니다.")
+        if h_code_direct.strip():
+            code = h_code_direct.strip().upper()
+            if len(code) >= 5 and len(code) <= 7 and code.isalnum():
+                chosen_code = code
+                chosen_name = get_etf_universe().get(code, f"종목_{code}")
+            else:
+                st.error("종목코드는 5~7자리 숫자/영문 조합이어야 합니다.")
 
-            buy_price_input = st.number_input("매수가격 (원)", min_value=0.0, step=100.0, format="%.0f")
+        buy_price_input = st.number_input("매수가격 (원)", min_value=0.0, step=100.0, format="%.0f")
 
-            if st.button("✅ 추가", use_container_width=True):
-                if chosen_code and buy_price_input > 0:
-                    st.session_state.holdings[chosen_code] = {
-                        "name": chosen_name,
-                        "buy_price": buy_price_input
-                    }
-                    save_holdings(st.session_state.holdings)
-                    st.success(f"[{chosen_name}] {buy_price_input:,.0f}원으로 추가됨!")
-                    st.rerun(scope="fragment")  # 이 섹션만 새로고침 (좌측 추천 목록은 그대로 유지)
-                elif not chosen_code:
-                    st.error("종목을 검색하거나 코드를 입력해주세요.")
-                else:
-                    st.error("매수가격을 입력해주세요.")
+        if st.button("✅ 추가", use_container_width=True):
+            if chosen_code and buy_price_input > 0:
+                st.session_state.holdings[chosen_code] = {
+                    "name": chosen_name,
+                    "buy_price": buy_price_input
+                }
+                save_holdings(st.session_state.holdings)
+                st.success(f"[{chosen_name}] {buy_price_input:,.0f}원으로 추가됨!")
+                st.rerun()
+            elif not chosen_code:
+                st.error("종목을 검색하거나 코드를 입력해주세요.")
+            else:
+                st.error("매수가격을 입력해주세요.")
 
-        # 보유 종목 리스트 (고정 높이 + 스크롤)
-        if not st.session_state.holdings:
-            st.info("아직 등록된 보유 종목이 없습니다.")
-        else:
-            with st.container(height=300):
-                for code, h in list(st.session_state.holdings.items()):
-                    name      = h["name"]
-                    buy_price = h["buy_price"]
+    # 보유 종목 리스트 (고정 높이 + 스크롤)
+    if not st.session_state.holdings:
+        st.info("아직 등록된 보유 종목이 없습니다.")
+    else:
+        with st.container(height=300):
+            for code, h in list(st.session_state.holdings.items()):
+                name      = h["name"]
+                buy_price = h["buy_price"]
 
-                    df   = fetch_data(code)
-                    data = calc_signals(df)
+                df   = fetch_data(code)
+                data = calc_signals(df)
 
-                    row_col1, row_col2, row_col3 = st.columns([4.4, 0.8, 0.8])
-                    with row_col1:
-                        if data is None:
-                            st.markdown(
-                                f"<div style='padding-top:6px;'>⚠️ {name} "
-                                f"<span style='opacity:0.6; font-size:0.8rem;'>(데이터 부족)</span></div>",
-                                unsafe_allow_html=True
-                            )
-                        else:
-                            cur_price  = data["현재가"]
-                            profit_pct = (cur_price - buy_price) / buy_price * 100
-                            is_danger  = profit_pct <= -5.0
-                            profit_color = "#c0392b" if profit_pct < 0 else "#0a7d2c"
-                            profit_icon  = "🔺" if profit_pct >= 0 else "🔻"
-
-                            st.markdown(
-                                f"<div style='padding-top:4px;'><b>{name}</b>  "
-                                f"{signal_badge(data['신호'])}"
-                                f"{'  ' + render_badge('🚨 손절', '#b3261e', '#fbe4e2') if is_danger else ''}"
-                                f"<div style='font-size:0.85rem; margin-top:2px;'>"
-                                f"현재 {cur_price:,.0f}원 &nbsp;·&nbsp; "
-                                f"<span style='color:{profit_color};'>{profit_icon} {profit_pct:+.2f}%</span>"
-                                f"</div></div>",
-                                unsafe_allow_html=True
-                            )
-                    with row_col2:
-                        if st.button("📊", key=f"hold_{code}", help="차트 보기", use_container_width=True):
+                row_col1, row_col2 = st.columns([5, 1])
+                with row_col1:
+                    if data is None:
+                        if st.button(f"⚠️ {name} (데이터 부족)", key=f"hold_{code}", use_container_width=True):
                             st.session_state.selected_code = code
                             st.session_state.selected_name = name
-                            st.rerun()  # 차트 영역(fragment 바깥)을 갱신하려면 전체 새로고침 필요
-                    with row_col3:
-                        if st.button("🗑️", key=f"del_hold_{code}"):
-                            del st.session_state.holdings[code]
-                            save_holdings(st.session_state.holdings)
-                            st.rerun(scope="fragment")  # 이 섹션만 새로고침 (좌측 추천 목록은 다시 안 돌음)
+                    else:
+                        cur_price  = data["현재가"]
+                        profit_pct = (cur_price - buy_price) / buy_price * 100
+                        signal_icon = data["신호"]
+                        profit_icon = "🔺" if profit_pct >= 0 else "🔻"
+                        stop_loss   = "  |  🚨 손절" if profit_pct <= -5.0 else ""
 
-    render_holdings_section()
+                        btn_label = (
+                            f"{name}  |  현재 {cur_price:,.0f}원  |  "
+                            f"수익률 {profit_icon}{profit_pct:+.2f}%  |  {signal_icon}{stop_loss}"
+                        )
+                        if st.button(btn_label, key=f"hold_{code}", use_container_width=True):
+                            st.session_state.selected_code = code
+                            st.session_state.selected_name = name
+                with row_col2:
+                    if st.button("🗑️", key=f"del_hold_{code}"):
+                        del st.session_state.holdings[code]
+                        save_holdings(st.session_state.holdings)
+                        st.rerun()
 
 st.divider()
 
@@ -885,30 +754,23 @@ else:
 
         if buy_price is not None:
             my_profit        = (data["현재가"] - buy_price) / buy_price * 100
-            is_danger         = my_profit <= -5.0
-            profit_color      = "#c0392b" if my_profit < 0 else "#0a7d2c"
-            delta_color       = "#c0392b" if data["전일대비"] < 0 else "#0a7d2c"
+            stop_loss_signal = "🚨 손절 필요" if my_profit <= -5.0 else "✅ 정상"
 
-            cards = [
-                metric_card("현재가", f"{data['현재가']:,.0f}원",
-                            f"{data['전일대비']:+,.0f} ({data['전일대비율']:+.2f}%)", delta_color),
-                metric_card("내 매수가", f"{buy_price:,.0f}원"),
-                metric_card("내 수익률", f"{my_profit:+.2f}%", sub_color=profit_color),
-                metric_card("손절기준(-5%)", f"{buy_price * 0.95:,.0f}원"),
-                metric_card("손절 여부", stop_loss_badge(is_danger)),
-                metric_card("매매신호", signal_badge(data["신호"])),
-            ]
-            st.markdown(metric_grid(cards), unsafe_allow_html=True)
+            mcol1, mcol2, mcol3, mcol4, mcol5, mcol6 = st.columns(6)
+            mcol1.metric("현재가", f"{data['현재가']:,.0f}원",
+                         f"{data['전일대비']:+,.0f} ({data['전일대비율']:+.2f}%)")
+            mcol2.metric("내 매수가", f"{buy_price:,.0f}원")
+            mcol3.metric("내 수익률", f"{my_profit:+.2f}%")
+            mcol4.metric("손절기준(-5%)", f"{buy_price * 0.95:,.0f}원")
+            mcol5.metric("손절 여부", stop_loss_signal)
+            mcol6.metric("매매신호", data["신호"])
         else:
-            delta_color = "#c0392b" if data["전일대비"] < 0 else "#0a7d2c"
-            cards = [
-                metric_card("현재가", f"{data['현재가']:,.0f}원",
-                            f"{data['전일대비']:+,.0f} ({data['전일대비율']:+.2f}%)", delta_color),
-                metric_card("신호", signal_badge(data["신호"])),
-                metric_card("추세", data["추세"]),
-                metric_card("골드크로스 수익률", ret_str),
-            ]
-            st.markdown(metric_grid(cards), unsafe_allow_html=True)
+            mcol1, mcol2, mcol3, mcol4 = st.columns(4)
+            mcol1.metric("현재가", f"{data['현재가']:,.0f}원",
+                         f"{data['전일대비']:+,.0f} ({data['전일대비율']:+.2f}%)")
+            mcol2.metric("신호", data["신호"])
+            mcol3.metric("추세", data["추세"])
+            mcol4.metric("골드크로스 수익률", ret_str)
 
         fig = make_chart(name, code, data, buy_price=buy_price)
         st.pyplot(fig)
