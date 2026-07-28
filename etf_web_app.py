@@ -153,16 +153,21 @@ COMMON_ETFS = {
     "144600": "KODEX 은선물(H)",
 }
 
-# ── 레버리지(항상 제외) / 인버스(토글로 제어) 키워드 분리 ───────────────
+# ── 레버리지(항상 제외) / 인버스·채권(토글로 제어) 키워드 분리 ───────────
 # 레버리지·2배(곱버스)는 위험도가 높아 토글과 무관하게 항상 제외합니다.
 # 1배 인버스는 하락장 대응용으로 토글을 켜면 포함할 수 있습니다.
+# 채권/단기채는 백테스트 결과 추세추종 전략과 궁합이 안 맞아(승률 22.5%) 기본적으로 제외하고,
+# 필요하면 토글로 켜서 포함할 수 있게 합니다.
 LEVERAGE_KEYWORDS = ["레버리지", "2X", "곱버스"]
 INVERSE_KEYWORDS  = ["인버스"]  # "선물인버스" 등도 이 substring으로 함께 걸러짐
+BOND_KEYWORDS     = ["채권", "국채", "국고채", "CD", "KOFR", "머니마켓", "MMF", "통안채", "회사채"]
 
-def is_excluded(name: str, include_inverse: bool = False) -> bool:
+def is_excluded(name: str, include_inverse: bool = False, include_bond: bool = False) -> bool:
     if any(kw in name for kw in LEVERAGE_KEYWORDS):
         return True  # 레버리지/2배는 토글과 무관하게 항상 제외
     if not include_inverse and any(kw in name for kw in INVERSE_KEYWORDS):
+        return True
+    if not include_bond and any(kw in name for kw in BOND_KEYWORDS):
         return True
     return False
 
@@ -217,12 +222,13 @@ def get_etf_universe_status():
     return "내장 목록(폴백)", None, "etf_data.db 파일이 없습니다. krx_data_collector.py를 먼저 실행해주세요."
 
 def search_etf(keyword: str) -> dict:
-    """ETF 유니버스(DB 또는 폴백)에서 검색 (레버리지는 항상 제외, 인버스는 토글에 따름)"""
+    """ETF 유니버스(DB 또는 폴백)에서 검색 (레버리지는 항상 제외, 인버스/채권은 토글에 따름)"""
     results = {}
     include_inverse = st.session_state.get("include_inverse", False)
+    include_bond    = st.session_state.get("include_bond", False)
     keyword_lower = keyword.lower().replace(" ", "")
     for code, name in get_etf_universe().items():
-        if is_excluded(name, include_inverse=include_inverse):
+        if is_excluded(name, include_inverse=include_inverse, include_bond=include_bond):
             continue
         if keyword_lower in name.lower().replace(" ", ""):
             results[f"{name} ({code})"] = (name, code)
@@ -582,11 +588,12 @@ def build_summary_prompt(sorted_golden: list) -> str:
 
 
 def scan_all_etfs() -> dict:
-    """ETF 유니버스(DB 또는 폴백) 전체를 스캔해서 신호 결과 딕셔너리로 반환 (레버리지는 항상 제외, 인버스는 토글에 따름)"""
+    """ETF 유니버스(DB 또는 폴백) 전체를 스캔해서 신호 결과 딕셔너리로 반환 (레버리지는 항상 제외, 인버스/채권은 토글에 따름)"""
     results = {}
     include_inverse = st.session_state.get("include_inverse", False)
+    include_bond    = st.session_state.get("include_bond", False)
     for code, name in get_etf_universe().items():
-        if is_excluded(name, include_inverse=include_inverse):
+        if is_excluded(name, include_inverse=include_inverse, include_bond=include_bond):
             continue
         df   = fetch_data(code)
         data = calc_signals(df)
@@ -605,6 +612,28 @@ st.markdown(
     f"기준일 {datetime.today().strftime('%Y.%m.%d')} &nbsp;|&nbsp; MA5 / MA20 / MA120</span></h3>",
     unsafe_allow_html=True
 )
+
+# ── 전략 설명 (타이틀 바로 아래) ──────────────────────────────────
+_universe = get_etf_universe()
+_include_inverse = st.session_state.get("include_inverse", False)
+_include_bond    = st.session_state.get("include_bond", False)
+_scan_universe = {
+    c: n for c, n in _universe.items()
+    if not is_excluded(n, include_inverse=_include_inverse, include_bond=_include_bond)
+}
+_source_label, _bas_dd, _error = get_etf_universe_status()
+_note_parts = []
+if _include_inverse:
+    _note_parts.append("인버스 포함")
+if _include_bond:
+    _note_parts.append("채권 포함")
+_universe_note = f" ({', '.join(_note_parts)})" if _note_parts else ""
+_strategy_caption = f"국내 ETF {len(_scan_universe)}개 ({_source_label}"
+_strategy_caption += f", 기준일 {_bas_dd})" if _bas_dd else ")"
+_strategy_caption += f"{_universe_note} 중 정배열(5>20>120) + 급경사 상위 10개 (20일 신고가 돌파 시 가산점 🚀)"
+st.caption(_strategy_caption)
+if _error:
+    st.caption(f"⚠️ KRX API 사용 불가 — {_error}")
 
 # ── 지표 카드(metric) 글자 크기 조정: 좁은 화면에서 잘리지 않도록 ──
 st.markdown("""
@@ -639,12 +668,14 @@ if "selected_name" not in st.session_state:
     st.session_state.selected_name = None
 if "include_inverse" not in st.session_state:
     st.session_state.include_inverse = False  # 기본값: 인버스 제외 (하락장 대응용, 필요시 토글로 켬)
+if "include_bond" not in st.session_state:
+    st.session_state.include_bond = False  # 기본값: 채권/단기채 제외 (백테스트상 승률 22.5%로 전략과 안 맞아 기본 제외, 필요시 토글로 켬)
 
 if get_db_conn() is None:
     st.warning("⚠️ etf_data.db 파일을 찾을 수 없어요. `python krx_data_collector.py` 를 먼저 실행해서 데이터를 수집해주세요. (수집 전까지는 내장 목록으로 임시 동작합니다)")
 
-# 새로고침 버튼 + 인버스 포함 토글 (타이틀 바로 아래)
-col_refresh, col_inverse, _ = st.columns([1, 2, 3])
+# ── 컨트롤 영역: 새로고침 + 스캔 대상/필터 토글을 한곳에 모음 ──────────
+col_refresh, col_inverse, col_bond, col_breakout = st.columns([1, 2, 2, 2.4])
 with col_refresh:
     if st.button("🔄 새로고침", use_container_width=True):
         st.cache_data.clear()
@@ -654,6 +685,31 @@ with col_inverse:
         "🔻 인버스(1배) 포함 — 하락장 대응",
         value=st.session_state.include_inverse,
         help="레버리지·2배 상품은 이 토글과 무관하게 항상 제외됩니다. 켜면 1배 인버스 ETF도 추천/검색 대상에 포함됩니다."
+    )
+with col_bond:
+    st.session_state.include_bond = st.toggle(
+        "🏦 채권/단기채 포함",
+        value=st.session_state.include_bond,
+        help="채권/단기채는 백테스트 결과 추세추종 전략과 궁합이 안 맞아(승률 22.5%) 기본적으로 제외됩니다. 켜면 추천/검색 대상에 포함됩니다."
+    )
+with col_breakout:
+    require_breakout = st.toggle(
+        "🚀 20일 신고가 돌파만",
+        value=False,
+        key="require_breakout_toggle",
+        help="꺼두면 정배열(5>20>120)만 만족해도 목록에 뜹니다. 켜면 그중 20일 신고가를 갱신한 종목만 남깁니다."
+    )
+
+col_gc1, col_gc2, _ = st.columns([1.6, 2, 4])
+with col_gc1:
+    filter_recent_gc = st.checkbox(
+        "최근 골드크로스만", value=False, key="filter_recent_gc_toggle",
+        help="골드크로스(MA5가 MA20을 상향 돌파)가 발생한 지 얼마 안 된 종목만 보여줍니다"
+    )
+with col_gc2:
+    recent_days = st.slider(
+        "영업일 이내", min_value=1, max_value=20, value=5, key="recent_days_slider",
+        disabled=not filter_recent_gc, label_visibility="collapsed" if filter_recent_gc else "visible"
     )
 
 st.divider()
@@ -666,42 +722,16 @@ top_left, top_right = st.columns(2)
 # ─────────────────────────────────────────────────────
 with top_left:
     st.markdown("#### 🟡 추세추종 추천 TOP 10")
-    _universe = get_etf_universe()
-    _include_inverse = st.session_state.get("include_inverse", False)
-    _scan_universe = {c: n for c, n in _universe.items() if not is_excluded(n, include_inverse=_include_inverse)}
-    _source_label, _bas_dd, _error = get_etf_universe_status()
-    _inverse_note = " (인버스 포함)" if _include_inverse else ""
-    _caption = f"국내 ETF {len(_scan_universe)}개 ({_source_label}"
-    _caption += f", 기준일 {_bas_dd})" if _bas_dd else ")"
-    _caption += f"{_inverse_note} 중 정배열(5>20>120) + 급경사 상위 10개 (20일 신고가 돌파 시 가산점 🚀)"
-    st.caption(_caption)
-    if _error:
-        st.caption(f"⚠️ KRX API 사용 불가 — {_error}")
 
     with st.spinner("ETF 전체 스캔 중..."):
         scan_results = scan_all_etfs()
 
-    require_breakout = st.checkbox(
-        "🚀 20일 신고가 돌파 종목만 보기 (정배열 + 돌파 둘 다 만족)",
-        value=False,
-        key="require_breakout_toggle",
-        help="꺼두면 정배열(5>20>120)만 만족해도 목록에 뜹니다. 켜면 그중 20일 신고가를 갱신한 종목만 남깁니다."
-    )
     signal_key = "복합매수신호" if require_breakout else "매수신호"
 
     golden_list = {
         code: info for code, info in scan_results.items()
         if info["data"][signal_key]
     }
-
-    # ── 필터: 최근 N영업일 이내 골드크로스만 보기 ──────────────────
-    filter_c1, filter_c2 = st.columns([1.3, 2])
-    with filter_c1:
-        filter_recent_gc = st.checkbox("최근 골드크로스만", value=False,
-                                        help="골드크로스(MA5가 MA20을 상향 돌파)가 발생한 지 얼마 안 된 종목만 보여줍니다")
-    with filter_c2:
-        recent_days = st.slider("영업일 이내", min_value=1, max_value=20, value=5,
-                                 disabled=not filter_recent_gc, label_visibility="collapsed" if filter_recent_gc else "visible")
 
     if filter_recent_gc:
         golden_list = {
