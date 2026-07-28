@@ -333,6 +333,16 @@ def calc_signals(df: pd.DataFrame) -> dict:
     else:
         slope_pct = 0.0
 
+    # ── 20일 신고가 돌파 (터틀 트레이딩 진입 타이밍) ──────────────────
+    # 오늘을 제외한 직전 20거래일 중 최고가를 오늘 종가가 넘었는지 확인
+    # (정배열 필터를 통과한 종목 중 "지금이 진입 적기인지"를 보여주는 보조 신호)
+    high20 = df["고가"].rolling(20).max().shift(1)
+    last_high20 = high20.iloc[-1]
+    if pd.isna(last_high20):
+        is_20d_breakout = False
+    else:
+        is_20d_breakout = last_price > last_high20
+
     return {
         "현재가":         last_price,
         "전일대비":       change,
@@ -352,6 +362,9 @@ def calc_signals(df: pd.DataFrame) -> dict:
         "보유일수":       days_held,
         "골드크로스경과영업일": gc_trading_days_ago,
         "추세경사":       slope_pct,
+        "20일고점":       last_high20,
+        "20일신고가돌파": is_20d_breakout,
+        "복합매수신호":   is_buy_signal and is_20d_breakout,
         "_close":  close,
         "_ma5":    ma5,
         "_ma20":   ma20,
@@ -660,7 +673,7 @@ with top_left:
     _inverse_note = " (인버스 포함)" if _include_inverse else ""
     _caption = f"국내 ETF {len(_scan_universe)}개 ({_source_label}"
     _caption += f", 기준일 {_bas_dd})" if _bas_dd else ")"
-    _caption += f"{_inverse_note} 중 정배열(5>20>120) + 급경사 상위 10개"
+    _caption += f"{_inverse_note} 중 정배열(5>20>120) + 급경사 상위 10개 (20일 신고가 돌파 시 가산점 🚀)"
     st.caption(_caption)
     if _error:
         st.caption(f"⚠️ KRX API 사용 불가 — {_error}")
@@ -668,9 +681,17 @@ with top_left:
     with st.spinner("ETF 전체 스캔 중..."):
         scan_results = scan_all_etfs()
 
+    require_breakout = st.checkbox(
+        "🚀 20일 신고가 돌파 종목만 보기 (정배열 + 돌파 둘 다 만족)",
+        value=False,
+        key="require_breakout_toggle",
+        help="꺼두면 정배열(5>20>120)만 만족해도 목록에 뜹니다. 켜면 그중 20일 신고가를 갱신한 종목만 남깁니다."
+    )
+    signal_key = "복합매수신호" if require_breakout else "매수신호"
+
     golden_list = {
         code: info for code, info in scan_results.items()
-        if info["data"]["매수신호"]
+        if info["data"][signal_key]
     }
 
     # ── 필터: 최근 N영업일 이내 골드크로스만 보기 ──────────────────
@@ -690,14 +711,29 @@ with top_left:
         }
 
     if not golden_list:
-        msg = "현재 매수신호(정배열) 상태인 ETF가 없습니다."
+        msg = (
+            "현재 정배열 + 20일 신고가 돌파를 동시에 만족하는 ETF가 없습니다."
+            if require_breakout else
+            "현재 매수신호(정배열) 상태인 ETF가 없습니다."
+        )
         if filter_recent_gc:
             msg = f"최근 {recent_days}영업일 이내 골드크로스가 발생한 매수신호 ETF가 없습니다."
         st.info(msg)
     else:
+        # 정렬 점수 = 추세경사 + 20일 신고가 돌파 가산점(5점)
+        # → 경사가 비슷할 때, 지금 막 20일 신고가를 돌파한(터틀 트레이딩 진입 타이밍) 종목을 더 위로 올림
+        BREAKOUT_BONUS = 5.0
+
+        def _rank_score(item):
+            d = item[1]["data"]
+            score = d["추세경사"]
+            if d["20일신고가돌파"]:
+                score += BREAKOUT_BONUS
+            return score
+
         sorted_golden = sorted(
             golden_list.items(),
-            key=lambda x: x[1]["data"]["추세경사"],
+            key=_rank_score,
             reverse=True
         )[:10]
 
@@ -728,10 +764,11 @@ with top_left:
                 with row_c1:
                     gc_ago = data["골드크로스경과영업일"]
                     gc_ago_str = f" · 크로스 {gc_ago}영업일 전" if gc_ago is not None else ""
+                    breakout_str = " · 🚀20일신고가돌파" if data["20일신고가돌파"] else ""
                     st.markdown(
                         f"<div style='padding-top:6px;'>"
                         f"<b>#{rank}</b> 🟡 {name}"
-                        f"<div style='font-size:0.75rem; opacity:0.65;'>{data['추세']}{gc_ago_str}</div>"
+                        f"<div style='font-size:0.75rem; opacity:0.65;'>{data['추세']}{gc_ago_str}{breakout_str}</div>"
                         f"</div>",
                         unsafe_allow_html=True
                     )
