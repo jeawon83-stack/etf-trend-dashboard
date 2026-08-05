@@ -161,8 +161,8 @@ COMMON_ETFS = {
 LEVERAGE_KEYWORDS = ["레버리지", "2X", "곱버스"]
 INVERSE_KEYWORDS  = ["인버스"]  # "선물인버스" 등도 이 substring으로 함께 걸러짐
 BOND_KEYWORDS     = [
-    "채권", "국채", "국고채", "CD", "KOFR", "머니마켓", "MMF", "통안채", "회사채",
-    "금융채", "은행채", "특수채", "여전채", "단기채",
+    "채권", "국채", "국고채", "국공채", "CD", "KOFR", "머니마켓", "MMF", "통안채", "회사채",
+    "금융채", "은행채", "특수채", "여전채", "단기채", "전단채", "단기자금",
 ]
 
 def is_excluded(name: str, include_inverse: bool = False, include_bond: bool = False) -> bool:
