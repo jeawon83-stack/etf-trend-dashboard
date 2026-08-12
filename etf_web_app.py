@@ -262,6 +262,39 @@ def fetch_data(ticker_code: str) -> pd.DataFrame:
     finally:
         conn.close()
 
+# ── 실시간 현재가 (네이버 금융 비공식 API) ──────────────────────────
+# ⚠️ 비공식 API라 네이버 쪽 사정으로 형식이 바뀌거나 막힐 수 있음. 실패 시 조용히
+#    빈 dict를 반환하고, 호출부에서 DB의 전일 종가로 자연스럽게 폴백함.
+@st.cache_data(ttl=30)
+def get_realtime_prices(codes: tuple) -> dict:
+    """종목코드 여러 개를 한 번에 조회해서 {코드: {현재가, 전일대비, 전일대비율}} 반환"""
+    if not codes:
+        return {}
+    try:
+        url = "https://polling.finance.naver.com/api/realtime/domestic/stock/" + ",".join(codes)
+        resp = requests.get(url, timeout=5, headers={"User-Agent": "Mozilla/5.0"})
+        resp.raise_for_status()
+        datas = resp.json().get("datas", [])
+        result = {}
+        for item in datas:
+            code  = item.get("cd")
+            price = item.get("closePrice")
+            if not code or price is None:
+                continue
+            def _num(v):
+                try:
+                    return float(str(v).replace(",", ""))
+                except (TypeError, ValueError):
+                    return None
+            result[code] = {
+                "현재가":     _num(price),
+                "전일대비":   _num(item.get("compareToPreviousClosePrice")),
+                "전일대비율": _num(item.get("fluctuationsRatio")),
+            }
+        return result
+    except Exception:
+        return {}
+
 # ── 골드크로스 탐지 ──────────────────────────────────────────────
 def find_last_golden_cross(ma5, ma20):
     for i in range(len(ma5) - 1, 0, -1):
@@ -882,6 +915,7 @@ with top_right:
         if not st.session_state.holdings:
             st.info("아직 등록된 보유 종목이 없습니다.")
         else:
+            rt_prices = get_realtime_prices(tuple(st.session_state.holdings.keys()))
             with st.container(height=300):
                 for code, h in list(st.session_state.holdings.items()):
                     name      = h["name"]
@@ -899,7 +933,10 @@ with top_right:
                                 unsafe_allow_html=True
                             )
                         else:
-                            cur_price  = data["현재가"]
+                            rt = rt_prices.get(code)
+                            is_realtime = rt is not None and rt["현재가"] is not None
+                            cur_price  = rt["현재가"] if is_realtime else data["현재가"]
+                            price_tag  = "" if is_realtime else " (전일종가)"
                             profit_pct = (cur_price - buy_price) / buy_price * 100
                             is_danger  = profit_pct <= -5.0
                             profit_color = "#c0392b" if profit_pct < 0 else "#0a7d2c"
@@ -910,7 +947,7 @@ with top_right:
                                 f"{signal_badge(data['신호'])}"
                                 f"{'  ' + render_badge('🚨 손절', '#b3261e', '#fbe4e2') if is_danger else ''}"
                                 f"<div style='font-size:0.85rem; margin-top:2px;'>"
-                                f"현재 {cur_price:,.0f}원 &nbsp;·&nbsp; "
+                                f"현재 {cur_price:,.0f}원{price_tag} &nbsp;·&nbsp; "
                                 f"<span style='color:{profit_color};'>{profit_icon} {profit_pct:+.2f}%</span>"
                                 f"</div></div>",
                                 unsafe_allow_html=True
@@ -954,14 +991,22 @@ else:
         ret_str = f"{ret:+.2f}% ({days}일 보유)" if ret is not None else "골드크로스 없음"
 
         if buy_price is not None:
-            my_profit        = (data["현재가"] - buy_price) / buy_price * 100
+            rt = get_realtime_prices((code,)).get(code)
+            is_realtime  = rt is not None and rt["현재가"] is not None
+            cur_price    = rt["현재가"] if is_realtime else data["현재가"]
+            price_label  = "현재가" if is_realtime else "현재가 (전일종가)"
+            delta_val    = rt["전일대비"] if is_realtime else data["전일대비"]
+            delta_rt     = rt["전일대비율"] if is_realtime else data["전일대비율"]
+
+            my_profit        = (cur_price - buy_price) / buy_price * 100
             is_danger         = my_profit <= -5.0
             profit_color      = "#c0392b" if my_profit < 0 else "#0a7d2c"
-            delta_color       = "#c0392b" if data["전일대비"] < 0 else "#0a7d2c"
+            delta_color       = "#c0392b" if (delta_val or 0) < 0 else "#0a7d2c"
 
             cards = [
-                metric_card("현재가", f"{data['현재가']:,.0f}원",
-                            f"{data['전일대비']:+,.0f} ({data['전일대비율']:+.2f}%)", delta_color),
+                metric_card(price_label, f"{cur_price:,.0f}원",
+                            f"{delta_val:+,.0f} ({delta_rt:+.2f}%)" if delta_val is not None and delta_rt is not None else None,
+                            delta_color),
                 metric_card("내 매수가", f"{buy_price:,.0f}원"),
                 metric_card("내 수익률", f"{my_profit:+.2f}%", sub_color=profit_color),
                 metric_card("손절기준(-5%)", f"{buy_price * 0.95:,.0f}원"),
