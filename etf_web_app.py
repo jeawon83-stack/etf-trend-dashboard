@@ -277,7 +277,7 @@ def get_realtime_prices(codes: tuple) -> dict:
         datas = resp.json().get("datas", [])
         result = {}
         for item in datas:
-            code  = item.get("cd")
+            code  = item.get("itemCode")
             price = item.get("closePrice")
             if not code or price is None:
                 continue
