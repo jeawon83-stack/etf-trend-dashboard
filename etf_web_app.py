@@ -74,11 +74,12 @@ def load_holdings() -> dict:
     sheet = get_gsheet()
     if sheet:
         try:
-            rows = sheet.get_all_records()   # [{"종목코드":..,"종목명":..,"매수가":..}, ...]
+            rows = sheet.get_all_records()   # [{"종목코드":..,"종목명":..,"매수가":..,"매수일":..}, ...]
             return {
                 str(r["종목코드"]): {
                     "name":      str(r["종목명"]),
-                    "buy_price": float(r["매수가"])
+                    "buy_price": float(r["매수가"]),
+                    "buy_date":  str(r["매수일"]) if r.get("매수일") else None
                 }
                 for r in rows if r.get("종목코드")
             }
@@ -99,9 +100,9 @@ def save_holdings(holdings: dict):
     if sheet:
         try:
             # 시트 전체를 덮어쓰기 (헤더 + 데이터)
-            rows = [["종목코드", "종목명", "매수가"]]
+            rows = [["종목코드", "종목명", "매수가", "매수일"]]
             for code, h in holdings.items():
-                rows.append([code, h["name"], h["buy_price"]])
+                rows.append([code, h["name"], h["buy_price"], h.get("buy_date", "")])
             sheet.clear()
             sheet.update(rows, "A1")
             return
@@ -385,6 +386,16 @@ def calc_signals(df: pd.DataFrame) -> dict:
     else:
         is_20d_breakout = last_price > last_high20
 
+    # ── ATR(20일) — 샹들리에(트레일링) 청산 계산용 ────────────────────
+    # True Range = 당일고가-당일저가 / |당일고가-전일종가| / |당일저가-전일종가| 중 최댓값
+    prev_close_atr = close.shift(1)
+    true_range = pd.concat([
+        df["고가"] - df["저가"],
+        (df["고가"] - prev_close_atr).abs(),
+        (df["저가"] - prev_close_atr).abs(),
+    ], axis=1).max(axis=1)
+    last_atr20 = true_range.rolling(20).mean().iloc[-1]
+
     return {
         "현재가":         last_price,
         "전일대비":       change,
@@ -407,12 +418,46 @@ def calc_signals(df: pd.DataFrame) -> dict:
         "20일고점":       last_high20,
         "20일신고가돌파": is_20d_breakout,
         "복합매수신호":   is_buy_signal and is_20d_breakout,
+        "ATR20":         last_atr20,
         "_close":  close,
         "_ma5":    ma5,
         "_ma20":   ma20,
         "_ma120":  ma120,
         "_gc_date":  gc_date,
         "_gc_price": gc_price,
+    }
+
+# ── 청산 전략: 샹들리에(트레일링 ATR) + 고정 -5% 안전장치 ─────────────
+# 백테스트 결과(H5) 기준: 데드크로스 청산은 쓰지 않고, 매수 이후 최고가 - 5×ATR20을
+# 트레일링 청산선으로 삼되, 혹시 진입 직후 실패해서 최고가가 못 오른 경우를 대비해
+# 매수가 대비 -5%를 최소 안전장치로 같이 둠 (둘 중 먼저 닿는 쪽에서 청산).
+CHANDELIER_ATR_MULTIPLIER = 5
+
+def calc_chandelier_exit(df: pd.DataFrame, buy_price: float, buy_date: str, cur_price: float, atr20: float) -> dict:
+    """보유종목의 H5 청산 신호를 계산.
+    buy_date가 없으면(과거 등록분 등 매수일 정보가 없는 경우) 아직 고점 추적 이력이 없다고 보고
+    매수가를 잠정 최고가로 삼음 (트레일링 청산선이 -5% 안전장치보다 안쪽에서 시작)."""
+    if buy_date:
+        since = df[df.index >= pd.to_datetime(buy_date)]
+        peak_price = max(since["고가"].max(), cur_price) if not since.empty else cur_price
+    else:
+        peak_price = max(buy_price, cur_price)
+
+    profit_pct = (cur_price - buy_price) / buy_price * 100
+    hit_floor  = profit_pct <= -5.0
+
+    if atr20 is not None and not pd.isna(atr20):
+        trail_stop_price = peak_price - CHANDELIER_ATR_MULTIPLIER * atr20
+        hit_trail = cur_price <= trail_stop_price
+    else:
+        trail_stop_price = None
+        hit_trail = False
+
+    return {
+        "청산신호":       hit_floor or hit_trail,
+        "최고가":         peak_price,
+        "트레일링청산가": trail_stop_price,
+        "고정손절가":     buy_price * 0.95,
     }
 
 # ── UI 헬퍼: 배지(badge) & 반응형 지표 카드 ─────────────────────────
@@ -461,7 +506,7 @@ def metric_grid(cards: list) -> str:
     )
 
 # ── 차트 생성 ────────────────────────────────────────────────────
-def make_chart(name: str, code: str, data: dict, buy_price: float = None):
+def make_chart(name: str, code: str, data: dict, buy_price: float = None, exit_status: dict = None):
     fig, ax = plt.subplots(figsize=(14, 5))
 
     close = data["_close"].iloc[-90:]
@@ -485,10 +530,15 @@ def make_chart(name: str, code: str, data: dict, buy_price: float = None):
     if buy_price is not None:
         ax.axhline(y=buy_price, color="#9C27B0", linewidth=1.3, linestyle="--", alpha=0.7,
                    label=f"내 매수가 ({buy_price:,.0f}원)")
-        # 손절 기준선 (-5%)
-        stop_loss_price = buy_price * 0.95
-        ax.axhline(y=stop_loss_price, color="#F44336", linewidth=1.3, linestyle=":", alpha=0.8,
-                   label=f"손절기준 -5% ({stop_loss_price:,.0f}원)")
+        # 청산 기준선: 트레일링(샹들리에) 청산가 + 고정 -5% 안전장치
+        if exit_status is not None:
+            trail_price = exit_status["트레일링청산가"]
+            if trail_price is not None:
+                ax.axhline(y=trail_price, color="#F44336", linewidth=1.3, linestyle=":", alpha=0.8,
+                           label=f"트레일링 청산가 ({trail_price:,.0f}원)")
+            floor_price = exit_status["고정손절가"]
+            ax.axhline(y=floor_price, color="#F44336", linewidth=1.0, linestyle="--", alpha=0.5,
+                       label=f"고정 손절 -5% ({floor_price:,.0f}원)")
 
     is_golden = data["매수신호"]
     ax.set_facecolor("#FFF9E6" if is_golden else "#E8F4FD")
@@ -556,7 +606,8 @@ def call_gemini(prompt: str) -> str:
 
     return f"⚠️ AI 응답 생성 중 오류가 발생했어요: {last_error}"
 
-def build_single_stock_prompt(name: str, code: str, data: dict, buy_price: float = None) -> str:
+def build_single_stock_prompt(name: str, code: str, data: dict, buy_price: float = None,
+                               exit_status: dict = None) -> str:
     """개별 종목용 AI 분석 프롬프트 생성"""
     ret      = data["기대수익률"]
     days     = data["보유일수"]
@@ -566,10 +617,13 @@ def build_single_stock_prompt(name: str, code: str, data: dict, buy_price: float
     holding_info = ""
     if buy_price is not None:
         my_profit = (data["현재가"] - buy_price) / buy_price * 100
+        trail_str = f"{exit_status['트레일링청산가']:,.0f}원" if exit_status and exit_status["트레일링청산가"] is not None else "산출 불가"
+        exit_hit  = exit_status["청산신호"] if exit_status else (my_profit <= -5.0)
         holding_info = f"""
 - 사용자 매수가: {buy_price:,.0f}원
 - 사용자 현재 수익률: {my_profit:+.2f}%
-- 손절 기준(-5%) 도달 여부: {"예 (손절 검토 필요)" if my_profit <= -5.0 else "아니오"}
+- 트레일링(샹들리에) 청산가: {trail_str} / 고정 손절선: -5%
+- 청산 신호 도달 여부: {"예 (청산 검토 필요)" if exit_hit else "아니오"}
 """
 
     prompt = f"""당신은 한국 ETF 시장을 분석하는 애널리스트입니다. 아래 데이터를 바탕으로 이 종목에 대한 간결한 코멘트를 작성해주세요.
@@ -901,7 +955,8 @@ with top_right:
                 if chosen_code and buy_price_input > 0:
                     st.session_state.holdings[chosen_code] = {
                         "name": chosen_name,
-                        "buy_price": buy_price_input
+                        "buy_price": buy_price_input,
+                        "buy_date": datetime.now().strftime("%Y-%m-%d")
                     }
                     save_holdings(st.session_state.holdings)
                     st.success(f"[{chosen_name}] {buy_price_input:,.0f}원으로 추가됨!")
@@ -938,14 +993,17 @@ with top_right:
                             cur_price  = rt["현재가"] if is_realtime else data["현재가"]
                             price_tag  = "" if is_realtime else " (전일종가)"
                             profit_pct = (cur_price - buy_price) / buy_price * 100
-                            is_danger  = profit_pct <= -5.0
                             profit_color = "#c0392b" if profit_pct < 0 else "#0a7d2c"
                             profit_icon  = "🔺" if profit_pct >= 0 else "🔻"
+
+                            exit_status = calc_chandelier_exit(
+                                df, buy_price, h.get("buy_date"), cur_price, data["ATR20"]
+                            )
 
                             st.markdown(
                                 f"<div style='padding-top:4px;'><b>{name}</b>  "
                                 f"{signal_badge(data['신호'])}"
-                                f"{'  ' + render_badge('🚨 손절', '#b3261e', '#fbe4e2') if is_danger else ''}"
+                                f"{'  ' + render_badge('🚨 청산 신호', '#b3261e', '#fbe4e2') if exit_status['청산신호'] else ''}"
                                 f"<div style='font-size:0.85rem; margin-top:2px;'>"
                                 f"현재 {cur_price:,.0f}원{price_tag} &nbsp;·&nbsp; "
                                 f"<span style='color:{profit_color};'>{profit_icon} {profit_pct:+.2f}%</span>"
@@ -983,13 +1041,16 @@ else:
         st.error(f"{name} ({code}) 데이터가 부족합니다. (상장 후 120거래일 이상 필요)")
     else:
         buy_price = None
+        buy_date  = None
         if code in st.session_state.holdings:
             buy_price = st.session_state.holdings[code]["buy_price"]
+            buy_date  = st.session_state.holdings[code].get("buy_date")
 
         ret     = data["기대수익률"]
         days    = data["보유일수"]
         ret_str = f"{ret:+.2f}% ({days}일 보유)" if ret is not None else "골드크로스 없음"
 
+        exit_status = None
         if buy_price is not None:
             rt = get_realtime_prices((code,)).get(code)
             is_realtime  = rt is not None and rt["현재가"] is not None
@@ -998,10 +1059,13 @@ else:
             delta_val    = rt["전일대비"] if is_realtime else data["전일대비"]
             delta_rt     = rt["전일대비율"] if is_realtime else data["전일대비율"]
 
-            my_profit        = (cur_price - buy_price) / buy_price * 100
-            is_danger         = my_profit <= -5.0
-            profit_color      = "#c0392b" if my_profit < 0 else "#0a7d2c"
-            delta_color       = "#c0392b" if (delta_val or 0) < 0 else "#0a7d2c"
+            my_profit    = (cur_price - buy_price) / buy_price * 100
+            profit_color = "#c0392b" if my_profit < 0 else "#0a7d2c"
+            delta_color  = "#c0392b" if (delta_val or 0) < 0 else "#0a7d2c"
+
+            exit_status = calc_chandelier_exit(df, buy_price, buy_date, cur_price, data["ATR20"])
+            trail_price = exit_status["트레일링청산가"]
+            trail_str   = f"{trail_price:,.0f}원" if trail_price is not None else "산출 불가"
 
             cards = [
                 metric_card(price_label, f"{cur_price:,.0f}원",
@@ -1009,8 +1073,8 @@ else:
                             delta_color),
                 metric_card("내 매수가", f"{buy_price:,.0f}원"),
                 metric_card("내 수익률", f"{my_profit:+.2f}%", sub_color=profit_color),
-                metric_card("손절기준(-5%)", f"{buy_price * 0.95:,.0f}원"),
-                metric_card("손절 여부", stop_loss_badge(is_danger)),
+                metric_card("트레일링 청산가", trail_str, sub=f"고점 {exit_status['최고가']:,.0f}원 - ATR×{CHANDELIER_ATR_MULTIPLIER}"),
+                metric_card("손절 여부", stop_loss_badge(exit_status["청산신호"])),
                 metric_card("매매신호", signal_badge(data["신호"])),
             ]
             st.markdown(metric_grid(cards), unsafe_allow_html=True)
@@ -1025,14 +1089,14 @@ else:
             ]
             st.markdown(metric_grid(cards), unsafe_allow_html=True)
 
-        fig = make_chart(name, code, data, buy_price=buy_price)
+        fig = make_chart(name, code, data, buy_price=buy_price, exit_status=exit_status)
         st.pyplot(fig)
         plt.close(fig)
 
         st.divider()
         if st.button("🤖 AI 애널리스트 의견 보기", key=f"ai_single_{code}", use_container_width=True):
             with st.spinner(f"AI가 {name} 종목을 분석하고 있어요..."):
-                prompt = build_single_stock_prompt(name, code, data, buy_price=buy_price)
+                prompt = build_single_stock_prompt(name, code, data, buy_price=buy_price, exit_status=exit_status)
                 comment_text = call_gemini(prompt)
             st.session_state[f"ai_comment_{code}"] = comment_text
 
