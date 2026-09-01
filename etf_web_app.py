@@ -483,6 +483,10 @@ def stop_loss_badge(is_danger: bool) -> str:
         return render_badge("🚨 손절 필요", "#b3261e", "#fbe4e2")
     return render_badge("✅ 정상", "#0a7d2c", "#e3f7e8")
 
+def breakout_badge() -> str:
+    """20일 신고가 돌파 뱃지 (테마 primaryColor 계열)"""
+    return render_badge("🚀 신고가 돌파", "#a8620a", "#fdf0dc")
+
 def metric_card(label: str, value: str, sub: str = None, sub_color: str = None) -> str:
     """지표 카드 한 칸의 HTML (st.metric 대체, 폭에 맞춰 자동 줄바꿈)"""
     sub_html = ""
@@ -746,6 +750,10 @@ st.markdown("""
     div[data-testid="stMetricDelta"] {
         font-size: 0.78rem !important;
     }
+    /* TOP10 / 보유종목 카드 행 간 여백 (border=True 컨테이너) */
+    div[data-testid="stVerticalBlockBorderWrapper"] {
+        margin-bottom: 8px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -860,7 +868,7 @@ with top_left:
         # 표 헤더
         st.markdown(
             "<div style='display:flex; font-size:0.78rem; opacity:0.6; "
-            "padding:2px 6px; margin-bottom:2px;'>"
+            "padding:2px 10px; margin-bottom:4px;'>"
             "<div style='width:32px;'>#</div>"
             "<div style='flex:2;'>종목명</div>"
             "<div style='flex:1; text-align:right;'>현재가</div>"
@@ -880,31 +888,30 @@ with top_left:
                 slope = data["추세경사"]
                 ret_str = f"{ret:+.2f}%" if ret is not None else "-"
 
-                row_c1, row_c2, row_c3 = st.columns([5.2, 2.6, 0.9])
-                with row_c1:
-                    gc_ago = data["골드크로스경과영업일"]
-                    gc_ago_str = f" · 크로스 {gc_ago}영업일 전" if gc_ago is not None else ""
-                    breakout_str = " · 🚀20일신고가돌파" if data["20일신고가돌파"] else ""
-                    st.markdown(
-                        f"<div style='padding-top:6px;'>"
-                        f"<b>#{rank}</b> 🟡 {name}"
-                        f"<div style='font-size:0.75rem; opacity:0.65;'>{data['추세']}{gc_ago_str}{breakout_str}</div>"
-                        f"</div>",
-                        unsafe_allow_html=True
-                    )
-                with row_c2:
-                    st.markdown(
-                        f"<div style='padding-top:6px; text-align:right; font-size:0.85rem;'>"
-                        f"{data['현재가']:,.0f}원<br>"
-                        f"<span style='opacity:0.65;'>경사 {slope:+.2f}% · {ret_str}</span>"
-                        f"</div>",
-                        unsafe_allow_html=True
-                    )
-                with row_c3:
-                    if st.button("📊", key=f"rec_{code}", help="차트 보기", use_container_width=True):
-                        st.session_state.selected_code = code
-                        st.session_state.selected_name = name
-                st.markdown("<hr style='margin:4px 0; opacity:0.15;'>", unsafe_allow_html=True)
+                with st.container(border=True):
+                    row_c1, row_c2, row_c3 = st.columns([5.2, 2.6, 0.9])
+                    with row_c1:
+                        gc_ago = data["골드크로스경과영업일"]
+                        gc_ago_str = f" · 크로스 {gc_ago}영업일 전" if gc_ago is not None else ""
+                        badge_html = "&nbsp;" + breakout_badge() if data["20일신고가돌파"] else ""
+                        st.markdown(
+                            f"<div><b>#{rank} {name}</b>{badge_html}"
+                            f"<div style='font-size:0.75rem; opacity:0.65; margin-top:2px;'>"
+                            f"{data['추세']}{gc_ago_str}</div></div>",
+                            unsafe_allow_html=True
+                        )
+                    with row_c2:
+                        st.markdown(
+                            f"<div style='text-align:right; font-size:0.85rem;'>"
+                            f"{data['현재가']:,.0f}원<br>"
+                            f"<span style='opacity:0.65;'>경사 {slope:+.2f}% · {ret_str}</span>"
+                            f"</div>",
+                            unsafe_allow_html=True
+                        )
+                    with row_c3:
+                        if st.button("📊", key=f"rec_{code}", help="차트 보기", use_container_width=True):
+                            st.session_state.selected_code = code
+                            st.session_state.selected_name = name
 
         if st.button("🤖 AI 시장 브리핑 보기", key="ai_summary_btn", use_container_width=True):
             with st.spinner("AI가 오늘의 추천 종목을 분석하고 있어요..."):
@@ -979,47 +986,48 @@ with top_right:
                     df   = fetch_data(code)
                     data = calc_signals(df)
 
-                    row_col1, row_col2, row_col3 = st.columns([4.4, 0.8, 0.8])
-                    with row_col1:
-                        if data is None:
-                            st.markdown(
-                                f"<div style='padding-top:6px;'>⚠️ {name} "
-                                f"<span style='opacity:0.6; font-size:0.8rem;'>(데이터 부족)</span></div>",
-                                unsafe_allow_html=True
-                            )
-                        else:
-                            rt = rt_prices.get(code)
-                            is_realtime = rt is not None and rt["현재가"] is not None
-                            cur_price  = rt["현재가"] if is_realtime else data["현재가"]
-                            price_tag  = "" if is_realtime else " (전일종가)"
-                            profit_pct = (cur_price - buy_price) / buy_price * 100
-                            profit_color = "#c0392b" if profit_pct < 0 else "#0a7d2c"
-                            profit_icon  = "🔺" if profit_pct >= 0 else "🔻"
+                    with st.container(border=True):
+                        row_col1, row_col2, row_col3 = st.columns([4.4, 0.8, 0.8])
+                        with row_col1:
+                            if data is None:
+                                st.markdown(
+                                    f"<div>⚠️ {name} "
+                                    f"<span style='opacity:0.6; font-size:0.8rem;'>(데이터 부족)</span></div>",
+                                    unsafe_allow_html=True
+                                )
+                            else:
+                                rt = rt_prices.get(code)
+                                is_realtime = rt is not None and rt["현재가"] is not None
+                                cur_price  = rt["현재가"] if is_realtime else data["현재가"]
+                                price_tag  = "" if is_realtime else " (전일종가)"
+                                profit_pct = (cur_price - buy_price) / buy_price * 100
+                                profit_color = "#c0392b" if profit_pct < 0 else "#0a7d2c"
+                                profit_icon  = "🔺" if profit_pct >= 0 else "🔻"
 
-                            exit_status = calc_chandelier_exit(
-                                df, buy_price, h.get("buy_date"), cur_price, data["ATR20"]
-                            )
+                                exit_status = calc_chandelier_exit(
+                                    df, buy_price, h.get("buy_date"), cur_price, data["ATR20"]
+                                )
 
-                            st.markdown(
-                                f"<div style='padding-top:4px;'><b>{name}</b>  "
-                                f"{signal_badge(data['신호'])}"
-                                f"{'  ' + render_badge('🚨 청산 신호', '#b3261e', '#fbe4e2') if exit_status['청산신호'] else ''}"
-                                f"<div style='font-size:0.85rem; margin-top:2px;'>"
-                                f"현재 {cur_price:,.0f}원{price_tag} &nbsp;·&nbsp; "
-                                f"<span style='color:{profit_color};'>{profit_icon} {profit_pct:+.2f}%</span>"
-                                f"</div></div>",
-                                unsafe_allow_html=True
-                            )
-                    with row_col2:
-                        if st.button("📊", key=f"hold_{code}", help="차트 보기", use_container_width=True):
-                            st.session_state.selected_code = code
-                            st.session_state.selected_name = name
-                            st.rerun()  # 차트 영역(fragment 바깥)을 갱신하려면 전체 새로고침 필요
-                    with row_col3:
-                        if st.button("🗑️", key=f"del_hold_{code}"):
-                            del st.session_state.holdings[code]
-                            save_holdings(st.session_state.holdings)
-                            st.rerun(scope="fragment")  # 이 섹션만 새로고침 (좌측 추천 목록은 다시 안 돌음)
+                                st.markdown(
+                                    f"<div><b>{name}</b>  "
+                                    f"{signal_badge(data['신호'])}"
+                                    f"{'  ' + render_badge('🚨 청산 신호', '#b3261e', '#fbe4e2') if exit_status['청산신호'] else ''}"
+                                    f"<div style='font-size:0.85rem; margin-top:4px;'>"
+                                    f"현재 {cur_price:,.0f}원{price_tag} &nbsp;·&nbsp; "
+                                    f"<span style='color:{profit_color};'>{profit_icon} {profit_pct:+.2f}%</span>"
+                                    f"</div></div>",
+                                    unsafe_allow_html=True
+                                )
+                        with row_col2:
+                            if st.button("📊", key=f"hold_{code}", help="차트 보기", use_container_width=True):
+                                st.session_state.selected_code = code
+                                st.session_state.selected_name = name
+                                st.rerun()  # 차트 영역(fragment 바깥)을 갱신하려면 전체 새로고침 필요
+                        with row_col3:
+                            if st.button("🗑️", key=f"del_hold_{code}"):
+                                del st.session_state.holdings[code]
+                                save_holdings(st.session_state.holdings)
+                                st.rerun(scope="fragment")  # 이 섹션만 새로고침 (좌측 추천 목록은 다시 안 돌음)
 
     render_holdings_section()
 
