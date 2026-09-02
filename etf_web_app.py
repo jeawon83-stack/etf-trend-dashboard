@@ -754,6 +754,32 @@ st.markdown("""
     div[data-testid="stVerticalBlockBorderWrapper"] {
         margin-bottom: 8px;
     }
+
+    /* ── 태블릿 세로 화면 최적화 (~900px 이하: iPad 세로 등) ──
+       ※ "> div >" 로 딱 1단계만 지정해서, 카드 내부(종목명/가격/버튼)의
+          중첩된 st.columns 행까지 같이 걸리지 않도록 범위를 좁힘 */
+    @media (max-width: 900px) {
+        /* 컨트롤 토글 4개를 한 줄에 욱여넣지 않고 2열로 줄바꿈 */
+        .st-key-controls_area > div > div[data-testid="stHorizontalBlock"] {
+            flex-wrap: wrap !important;
+            row-gap: 10px;
+        }
+        .st-key-controls_area > div > div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] {
+            min-width: 46% !important;
+            flex: 1 1 46% !important;
+        }
+        /* TOP10 추천 / 내 보유 종목을 좌우 배치 대신 위아래로 전환 */
+        .st-key-main_split > div > div[data-testid="stHorizontalBlock"] {
+            flex-direction: column !important;
+        }
+        .st-key-main_split > div > div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] {
+            width: 100% !important;
+        }
+        /* 카드 안 버튼(📊/🗑️) 터치 영역을 살짝 키움 */
+        div[data-testid="stVerticalBlockBorderWrapper"] button {
+            min-height: 2.4rem;
+        }
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -773,47 +799,51 @@ if get_db_conn() is None:
     st.warning("⚠️ etf_data.db 파일을 찾을 수 없어요. `python krx_data_collector.py` 를 먼저 실행해서 데이터를 수집해주세요. (수집 전까지는 내장 목록으로 임시 동작합니다)")
 
 # ── 컨트롤 영역: 새로고침 + 스캔 대상/필터 토글을 한곳에 모음 ──────────
-col_refresh, col_inverse, col_bond, col_breakout = st.columns([1, 2, 2, 2.4])
-with col_refresh:
-    if st.button("🔄 새로고침", use_container_width=True):
-        st.cache_data.clear()
-        st.rerun()
-with col_inverse:
-    st.session_state.include_inverse = st.toggle(
-        "🔻 인버스(1배) 포함 — 하락장 대응",
-        value=st.session_state.include_inverse,
-        help="레버리지·2배 상품은 이 토글과 무관하게 항상 제외됩니다. 켜면 1배 인버스 ETF도 추천/검색 대상에 포함됩니다."
-    )
-with col_bond:
-    st.session_state.include_bond = st.toggle(
-        "🏦 채권/단기채 포함",
-        value=st.session_state.include_bond,
-        help="채권/단기채는 백테스트 결과 추세추종 전략과 궁합이 안 맞아(승률 22.5%) 기본적으로 제외됩니다. 켜면 추천/검색 대상에 포함됩니다."
-    )
-with col_breakout:
-    require_breakout = st.toggle(
-        "🚀 20일 신고가 돌파만",
-        value=False,
-        key="require_breakout_toggle",
-        help="꺼두면 정배열(5>20>120)만 만족해도 목록에 뜹니다. 켜면 그중 20일 신고가를 갱신한 종목만 남깁니다."
-    )
+# key="controls_area" → 태블릿 세로 화면 폭에서 아래 CSS(@media)로 2열 줄바꿈시키기 위한 훅
+with st.container(key="controls_area"):
+    col_refresh, col_inverse, col_bond, col_breakout = st.columns([1, 2, 2, 2.4])
+    with col_refresh:
+        if st.button("🔄 새로고침", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
+    with col_inverse:
+        st.session_state.include_inverse = st.toggle(
+            "🔻 인버스 포함",
+            value=st.session_state.include_inverse,
+            help="하락장 대응용. 레버리지·2배 상품은 이 토글과 무관하게 항상 제외됩니다. 켜면 1배 인버스 ETF도 추천/검색 대상에 포함됩니다."
+        )
+    with col_bond:
+        st.session_state.include_bond = st.toggle(
+            "🏦 채권/단기채 포함",
+            value=st.session_state.include_bond,
+            help="채권/단기채는 백테스트 결과 추세추종 전략과 궁합이 안 맞아(승률 22.5%) 기본적으로 제외됩니다. 켜면 추천/검색 대상에 포함됩니다."
+        )
+    with col_breakout:
+        require_breakout = st.toggle(
+            "🚀 20일 신고가 돌파만",
+            value=False,
+            key="require_breakout_toggle",
+            help="꺼두면 정배열(5>20>120)만 만족해도 목록에 뜹니다. 켜면 그중 20일 신고가를 갱신한 종목만 남깁니다."
+        )
 
-col_gc1, col_gc2, _ = st.columns([1.6, 2, 4])
-with col_gc1:
-    filter_recent_gc = st.checkbox(
-        "최근 골드크로스만", value=False, key="filter_recent_gc_toggle",
-        help="골드크로스(MA5가 MA20을 상향 돌파)가 발생한 지 얼마 안 된 종목만 보여줍니다"
-    )
-with col_gc2:
-    recent_days = st.slider(
-        "영업일 이내", min_value=1, max_value=20, value=5, key="recent_days_slider",
-        disabled=not filter_recent_gc, label_visibility="collapsed" if filter_recent_gc else "visible"
-    )
+    col_gc1, col_gc2, _ = st.columns([1.6, 2, 4])
+    with col_gc1:
+        filter_recent_gc = st.checkbox(
+            "최근 골드크로스만", value=False, key="filter_recent_gc_toggle",
+            help="골드크로스(MA5가 MA20을 상향 돌파)가 발생한 지 얼마 안 된 종목만 보여줍니다"
+        )
+    with col_gc2:
+        recent_days = st.slider(
+            "영업일 이내", min_value=1, max_value=20, value=5, key="recent_days_slider",
+            disabled=not filter_recent_gc, label_visibility="collapsed" if filter_recent_gc else "visible"
+        )
 
 st.divider()
 
 # ── 상단: 좌(추천) / 우(보유종목) ───────────────────────────────
-top_left, top_right = st.columns(2)
+# key="main_split" → 태블릿 세로 화면 폭에서 아래 CSS(@media)로 좌우 배치를 위아래로 전환하기 위한 훅
+with st.container(key="main_split"):
+    top_left, top_right = st.columns(2)
 
 # ─────────────────────────────────────────────────────
 # 좌측: 추세추종 추천 종목
