@@ -695,15 +695,40 @@ def scan_all_etfs() -> dict:
             results[code] = {"name": name, "data": data}
     return results
 
+# ── TOP10 정렬 기준 옵션 ──────────────────────────────────────────
+BREAKOUT_BONUS = 5.0  # 정배열+돌파 동시신호 종목에 주는 가산점 (추천순 정렬용)
+
+SORT_OPTIONS = {
+    "추천순 (경사+돌파 가산점)": (
+        lambda item: item[1]["data"]["추세경사"] + (BREAKOUT_BONUS if item[1]["data"]["20일신고가돌파"] else 0),
+        True,
+    ),
+    "추세경사 높은 순": (lambda item: item[1]["data"]["추세경사"], True),
+    "예상수익률 높은 순": (
+        lambda item: item[1]["data"]["기대수익률"] if item[1]["data"]["기대수익률"] is not None else float("-inf"),
+        True,
+    ),
+    "현재가 높은 순": (lambda item: item[1]["data"]["현재가"], True),
+    "골드크로스 최근 순": (
+        lambda item: item[1]["data"]["골드크로스경과영업일"] if item[1]["data"]["골드크로스경과영업일"] is not None else float("inf"),
+        False,
+    ),
+    "종목명 (가나다순)": (lambda item: item[1]["name"], False),
+}
+
 # ════════════════════════════════════════════════════════════════
 #  UI 시작
 # ════════════════════════════════════════════════════════════════
 
 # ── 타이틀 (높이 줄임) ──────────────────────────────────────────
+# 실제 DB에 저장된 최신 기준일을 표시 (접속한 오늘 날짜가 아님 — DB 갱신이
+# 늦어지면 "오늘"과 다를 수 있으므로, 화면에 보이는 날짜가 곧 데이터 시점임)
+_source_label, _bas_dd, _error = get_etf_universe_status()
+_bas_dd_display = f"{_bas_dd[:4]}.{_bas_dd[4:6]}.{_bas_dd[6:]}" if _bas_dd else "-"
 st.markdown(
     f"<h3 style='margin-bottom:0'>📈 ETF 추세 추종 대시보드 &nbsp;"
     f"<span style='font-size:0.6em; color:gray; font-weight:normal'>"
-    f"기준일 {datetime.today().strftime('%Y.%m.%d')} &nbsp;|&nbsp; MA5 / MA20 / MA120</span></h3>",
+    f"기준일 {_bas_dd_display} &nbsp;|&nbsp; MA5 / MA20 / MA120</span></h3>",
     unsafe_allow_html=True
 )
 
@@ -715,7 +740,6 @@ _scan_universe = {
     c: n for c, n in _universe.items()
     if not is_excluded(n, include_inverse=_include_inverse, include_bond=_include_bond)
 }
-_source_label, _bas_dd, _error = get_etf_universe_status()
 _note_parts = []
 if _include_inverse:
     _note_parts.append("인버스 포함")
@@ -849,7 +873,14 @@ with st.container(key="main_split"):
 # 좌측: 추세추종 추천 종목
 # ─────────────────────────────────────────────────────
 with top_left:
-    st.markdown("#### 🟡 추세추종 추천 TOP 10")
+    title_col, sort_col = st.columns([3, 2])
+    with title_col:
+        st.markdown("#### 🟡 추세추종 추천 TOP 10")
+    with sort_col:
+        sort_option = st.selectbox(
+            "정렬 기준", list(SORT_OPTIONS.keys()),
+            key="top10_sort_option", label_visibility="collapsed"
+        )
 
     with st.spinner("ETF 전체 스캔 중..."):
         scan_results = scan_all_etfs()
@@ -878,21 +909,11 @@ with top_left:
             msg = f"최근 {recent_days}영업일 이내 골드크로스가 발생한 매수신호 ETF가 없습니다."
         st.info(msg)
     else:
-        # 정렬 점수 = 추세경사 + 20일 신고가 돌파 가산점(5점)
-        # → 경사가 비슷할 때, 지금 막 20일 신고가를 돌파한(터틀 트레이딩 진입 타이밍) 종목을 더 위로 올림
-        BREAKOUT_BONUS = 5.0
-
-        def _rank_score(item):
-            d = item[1]["data"]
-            score = d["추세경사"]
-            if d["20일신고가돌파"]:
-                score += BREAKOUT_BONUS
-            return score
-
+        _sort_key, _sort_reverse = SORT_OPTIONS[sort_option]
         sorted_golden = sorted(
             golden_list.items(),
-            key=_rank_score,
-            reverse=True
+            key=_sort_key,
+            reverse=_sort_reverse
         )[:10]
 
         # 표 헤더
