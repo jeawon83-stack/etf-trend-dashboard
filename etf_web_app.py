@@ -523,9 +523,12 @@ def make_chart(name: str, code: str, data: dict, buy_price: float = None, exit_s
 # ════════════════════════════════════════════════════════════════
 GEMINI_MODELS = ["gemini-flash-latest", "gemini-2.5-flash", "gemini-3.1-flash-lite"]
 
-def call_gemini(prompt: str) -> str:
+def call_gemini(prompt: str, use_search: bool = False) -> str:
     """Gemini API 호출. Streamlit Secrets에 GEMINI_API_KEY가 있어야 동작합니다.
-    모델이 지원 중단되어 404가 나는 경우를 대비해 여러 모델명을 순서대로 시도합니다."""
+    모델이 지원 중단되어 404가 나는 경우를 대비해 여러 모델명을 순서대로 시도합니다.
+    use_search=True면 Google 검색 그라운딩을 켜서, 모델이 학습 데이터에만 기대지 않고
+    최신 뉴스/이슈를 실제로 검색해서 답변에 반영하게 함 (전체 시장 브리핑처럼 최신
+    이슈 연계가 필요한 경우에만 켜기 — 검색 그라운딩은 호출당 비용이 추가로 붙을 수 있음)."""
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
     except Exception:
@@ -535,19 +538,22 @@ def call_gemini(prompt: str) -> str:
     for model in GEMINI_MODELS:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         try:
+            payload = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "temperature": 0.4,
+                    "maxOutputTokens": 1500,
+                    # 최신 모델(2.5/3.x)은 답변 전 내부 "사고" 과정을 거치는데,
+                    # 이를 꺼야 사고 과정이 답변에 섞이거나 토큰을 다 써서 잘리는 문제를 막을 수 있음
+                    "thinkingConfig": {"thinkingBudget": 0},
+                },
+            }
+            if use_search:
+                payload["tools"] = [{"google_search": {}}]
             resp = requests.post(
                 f"{url}?key={api_key}",
                 headers={"Content-Type": "application/json"},
-                json={
-                    "contents": [{"parts": [{"text": prompt}]}],
-                    "generationConfig": {
-                        "temperature": 0.4,
-                        "maxOutputTokens": 1500,
-                        # 최신 모델(2.5/3.x)은 답변 전 내부 "사고" 과정을 거치는데,
-                        # 이를 꺼야 사고 과정이 답변에 섞이거나 토큰을 다 써서 잘리는 문제를 막을 수 있음
-                        "thinkingConfig": {"thinkingBudget": 0},
-                    },
-                },
+                json=payload,
                 timeout=30,
             )
             if resp.status_code == 404:
@@ -634,13 +640,14 @@ def build_summary_prompt(sorted_golden: list) -> str:
 {stock_list_text}
 
 [작성 지침]
-- 5~7문장 정도의 한국어 브리핑
-- 어떤 섹터/테마가 강세를 보이는지 패턴을 짚어줄 것 (예: 반도체/2차전지 등 특정 산업군 쏠림 여부)
+- 먼저 최근(오늘 기준 최근 며칠) 실제 국내외 주요 뉴스·이슈(미국 연준 금리 결정, 중동/지정학적 갈등, 주요국 경제지표, 환율, 유가 등)를 검색해서 확인할 것 — 확인되지 않은 이슈를 지어내지 말고, 실제로 검색된 사실만 근거로 사용
+- 위 ETF 목록에서 보이는 섹터/테마 쏠림(예: 반도체/2차전지/원자재/방산 등)이 그런 최신 이슈와 어떻게 연결되는지 종합적으로 해석 (예: 유가 상승세가 원자재 ETF 강세와 맞물리는지, 금리 동향이 특정 섹터에 어떤 영향을 줬는지 등)
 - 국내 종목과 해외(미국/중국/일본 등) 종목 비중도 함께 언급
-- 채권/금 등 안전자산 ETF가 포함되어 있다면 그 의미도 짧게 해석
-- 전체적인 시장 분위기에 대한 균형 잡힌 해석 제공 (과도한 낙관/비관 지양)
+- 채권/금 등 안전자산 ETF가 포함되어 있다면 그 의미도 (예: 지정학적 리스크 회피 심리 등) 짧게 해석
+- 6~8문장 정도의 한국어 브리핑, 전체적인 시장 분위기에 대한 균형 잡힌 해석 제공 (과도한 낙관/비관 지양)
+- 뉴스와의 연관성은 "~영향으로 보인다/~와 맞물린 것으로 해석된다"처럼 신중한 어조로 서술 (단정적 인과관계 주장 지양)
 - 투자 손익에 대한 법적 책임이 없는 정보 제공 목적임을 마지막에 짧게 명시
-- 분석 과정이나 검토 메모 없이, 사용자에게 보여줄 최종 브리핑 문장만 바로 작성"""
+- 분석 과정이나 검토 메모, 검색 과정 설명 없이, 사용자에게 보여줄 최종 브리핑 문장만 바로 작성"""
     return prompt
 
 
@@ -929,7 +936,7 @@ with top_left:
 
         if st.button("🤖 AI 시장 브리핑 보기", key="ai_summary_btn", use_container_width=True):
             with st.spinner("AI가 오늘의 추천 종목을 분석하고 있어요..."):
-                summary_text = call_gemini(build_summary_prompt(sorted_golden))
+                summary_text = call_gemini(build_summary_prompt(sorted_golden), use_search=True)
             st.session_state.ai_summary_text = summary_text
 
         if st.session_state.get("ai_summary_text"):
