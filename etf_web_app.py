@@ -263,6 +263,35 @@ def fetch_data(ticker_code: str) -> pd.DataFrame:
     finally:
         conn.close()
 
+# ── 시장 레짐 필터 (백테스트 결과: 벤치마크가 200일선 위일 때만 신규 진입하면
+#    승률·CAGR·MDD·Sharpe가 전부 개선됨 — 장기 백테스트로 확인함) ──────────
+REGIME_BENCHMARK_CANDIDATES = ["KODEX 200", "TIGER 200"]
+REGIME_MA_WINDOW = 200
+
+@st.cache_data(ttl=1800)
+def get_market_regime() -> dict:
+    """벤치마크(코스피200 추종 ETF)가 자기 200일선 위에 있는지로 시장 레짐 판단.
+    반환: {"is_bull": bool 또는 None(판단 불가), "benchmark_name", "cur_price", "ma200"}"""
+    universe = get_etf_universe()
+    for name_candidate in REGIME_BENCHMARK_CANDIDATES:
+        code = next((c for c, n in universe.items() if n == name_candidate), None)
+        if code is None:
+            continue
+        df = fetch_data(code)
+        if len(df) < REGIME_MA_WINDOW:
+            continue
+        ma200 = df["종가"].rolling(REGIME_MA_WINDOW).mean().iloc[-1]
+        cur_price = df["종가"].iloc[-1]
+        if pd.isna(ma200):
+            continue
+        return {
+            "is_bull": bool(cur_price > ma200),
+            "benchmark_name": name_candidate,
+            "cur_price": cur_price,
+            "ma200": ma200,
+        }
+    return {"is_bull": None, "benchmark_name": None, "cur_price": None, "ma200": None}
+
 # ── 실시간 현재가 (네이버 금융 비공식 API) ──────────────────────────
 # ⚠️ 비공식 API라 네이버 쪽 사정으로 형식이 바뀌거나 막힐 수 있음. 실패 시 조용히
 #    빈 dict를 반환하고, 호출부에서 DB의 전일 종가로 자연스럽게 폴백함.
@@ -788,6 +817,8 @@ if "include_inverse" not in st.session_state:
     st.session_state.include_inverse = False  # 기본값: 인버스 제외 (하락장 대응용, 필요시 토글로 켬)
 if "include_bond" not in st.session_state:
     st.session_state.include_bond = False  # 기본값: 채권/단기채 제외 (백테스트상 승률 22.5%로 전략과 안 맞아 기본 제외, 필요시 토글로 켬)
+if "use_regime_filter" not in st.session_state:
+    st.session_state.use_regime_filter = False  # 기본값: 꺼짐 (장기 백테스트로 효과 확인됨, 필요시 토글로 켬)
 
 if get_db_conn() is None:
     st.warning("⚠️ etf_data.db 파일을 찾을 수 없어요. `python krx_data_collector.py` 를 먼저 실행해서 데이터를 수집해주세요. (수집 전까지는 내장 목록으로 임시 동작합니다)")
@@ -795,7 +826,7 @@ if get_db_conn() is None:
 # ── 컨트롤 영역: 새로고침 + 스캔 대상/필터 토글을 한곳에 모음 ──────────
 # key="controls_area" → 태블릿 세로 화면 폭에서 아래 CSS(@media)로 2열 줄바꿈시키기 위한 훅
 with st.container(key="controls_area"):
-    col_refresh, col_inverse, col_bond, col_breakout = st.columns([1, 2, 2, 2.4])
+    col_refresh, col_inverse, col_bond, col_breakout, col_regime = st.columns([1, 2, 2, 2.4, 2.2])
     with col_refresh:
         if st.button("🔄 새로고침", use_container_width=True):
             st.cache_data.clear()
@@ -818,6 +849,13 @@ with st.container(key="controls_area"):
             value=False,
             key="require_breakout_toggle",
             help="꺼두면 정배열(5>20>120)만 만족해도 목록에 뜹니다. 켜면 그중 20일 신고가를 갱신한 종목만 남깁니다."
+        )
+    with col_regime:
+        st.session_state.use_regime_filter = st.toggle(
+            "🌊 시장 레짐 필터",
+            value=st.session_state.use_regime_filter,
+            help="코스피200(KODEX 200 기준)이 200일선 아래(약세장 레짐)일 때는 신규 매수 추천을 쉽니다. "
+                 "장기(2014~) 백테스트 결과 승률·CAGR·MDD·Sharpe가 전부 개선됨을 확인했습니다."
         )
 
     col_gc1, col_gc2, _ = st.columns([1.6, 2, 4])
@@ -855,28 +893,42 @@ with top_left:
     with st.spinner("ETF 전체 스캔 중..."):
         scan_results = scan_all_etfs()
 
+    regime = get_market_regime()
+    if regime["is_bull"] is True:
+        st.caption(f"🌊 시장 레짐: 강세장 ({regime['benchmark_name']} {regime['cur_price']:,.0f}원 > 200일선 {regime['ma200']:,.0f}원)")
+    elif regime["is_bull"] is False:
+        st.caption(f"🌊 시장 레짐: 약세장 ({regime['benchmark_name']} {regime['cur_price']:,.0f}원 < 200일선 {regime['ma200']:,.0f}원)")
+    else:
+        st.caption("🌊 시장 레짐: 판단 불가 (벤치마크 데이터 부족)")
+
     signal_key = "복합매수신호" if require_breakout else "매수신호"
+    regime_blocks_entry = st.session_state.use_regime_filter and regime["is_bull"] is False
 
-    golden_list = {
-        code: info for code, info in scan_results.items()
-        if info["data"][signal_key]
-    }
-
-    if filter_recent_gc:
+    if regime_blocks_entry:
+        golden_list = {}
+    else:
         golden_list = {
-            code: info for code, info in golden_list.items()
-            if info["data"]["골드크로스경과영업일"] is not None
-            and info["data"]["골드크로스경과영업일"] <= recent_days
+            code: info for code, info in scan_results.items()
+            if info["data"][signal_key]
         }
+        if filter_recent_gc:
+            golden_list = {
+                code: info for code, info in golden_list.items()
+                if info["data"]["골드크로스경과영업일"] is not None
+                and info["data"]["골드크로스경과영업일"] <= recent_days
+            }
 
     if not golden_list:
-        msg = (
-            "현재 정배열 + 20일 신고가 돌파를 동시에 만족하는 ETF가 없습니다."
-            if require_breakout else
-            "현재 매수신호(정배열) 상태인 ETF가 없습니다."
-        )
-        if filter_recent_gc:
-            msg = f"최근 {recent_days}영업일 이내 골드크로스가 발생한 매수신호 ETF가 없습니다."
+        if regime_blocks_entry:
+            msg = f"🌊 시장 레짐 필터: {regime['benchmark_name']}이 200일선 아래(약세장)라 신규 추천을 쉬고 있습니다."
+        else:
+            msg = (
+                "현재 정배열 + 20일 신고가 돌파를 동시에 만족하는 ETF가 없습니다."
+                if require_breakout else
+                "현재 매수신호(정배열) 상태인 ETF가 없습니다."
+            )
+            if filter_recent_gc:
+                msg = f"최근 {recent_days}영업일 이내 골드크로스가 발생한 매수신호 ETF가 없습니다."
         st.info(msg)
     else:
         _sort_key, _sort_reverse = SORT_OPTIONS[sort_option]
