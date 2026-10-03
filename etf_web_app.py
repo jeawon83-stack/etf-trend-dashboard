@@ -818,7 +818,7 @@ if "include_inverse" not in st.session_state:
 if "include_bond" not in st.session_state:
     st.session_state.include_bond = False  # 기본값: 채권/단기채 제외 (백테스트상 승률 22.5%로 전략과 안 맞아 기본 제외, 필요시 토글로 켬)
 if "use_regime_filter" not in st.session_state:
-    st.session_state.use_regime_filter = False  # 기본값: 꺼짐 (장기 백테스트로 효과 확인됨, 필요시 토글로 켬)
+    st.session_state.use_regime_filter = True  # 기본값: 켜짐 (장기 백테스트에서 B/GC5 모두 개선 확인, 필요시 토글로 끔)
 
 if get_db_conn() is None:
     st.warning("⚠️ etf_data.db 파일을 찾을 수 없어요. `python krx_data_collector.py` 를 먼저 실행해서 데이터를 수집해주세요. (수집 전까지는 내장 목록으로 임시 동작합니다)")
@@ -846,7 +846,7 @@ with st.container(key="controls_area"):
     with col_breakout:
         require_breakout = st.toggle(
             "🚀 20일 신고가 돌파만",
-            value=False,
+            value=True,
             key="require_breakout_toggle",
             help="꺼두면 정배열(5>20>120)만 만족해도 목록에 뜹니다. 켜면 그중 20일 신고가를 갱신한 종목만 남깁니다."
         )
@@ -861,7 +861,7 @@ with st.container(key="controls_area"):
     col_gc1, col_gc2, _ = st.columns([1.6, 2, 4])
     with col_gc1:
         filter_recent_gc = st.checkbox(
-            "최근 골드크로스만", value=False, key="filter_recent_gc_toggle",
+            "최근 골드크로스만", value=True, key="filter_recent_gc_toggle",
             help="골드크로스(MA5가 MA20을 상향 돌파)가 발생한 지 얼마 안 된 종목만 보여줍니다"
         )
     with col_gc2:
